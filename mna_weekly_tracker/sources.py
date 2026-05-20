@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import logging
 import re
 import time
@@ -19,7 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
-from .config import CHINA_SOURCES, GLOBAL_QUERIES, HKEX_QUERIES, SourceConfig
+from .config import CHINA_NEWS_SOURCES, CHINA_SOURCES, GLOBAL_QUERIES, HKEX_QUERIES, SourceConfig
 
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -111,7 +112,7 @@ def request_with_retries(method: str, url: str, *, retries: int = 2, sleep_secon
     raise RuntimeError(f"request failed for {url}: {last_exc}")
 
 
-def fetch_cninfo(source: SourceConfig, start: datetime, end: datetime, page_size: int = 30) -> list[RawItem]:
+def fetch_cninfo(source: SourceConfig, start: datetime, end: datetime, page_size: int = 50) -> list[RawItem]:
     endpoint = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
     headers = {
         "Referer": "https://www.cninfo.com.cn/new/commonUrl/pageOfSearch?url=disclosure/list/search",
@@ -123,7 +124,7 @@ def fetch_cninfo(source: SourceConfig, start: datetime, end: datetime, page_size
     start_s = start.strftime("%Y-%m-%d")
     end_s = end.strftime("%Y-%m-%d")
     for keyword in source.keywords:
-        for page_num in (1, 2):
+        for page_num in range(1, 5):
             data = {
                 "pageNum": str(page_num),
                 "pageSize": str(page_size),
@@ -174,18 +175,16 @@ def google_news_rss_url(query: str, *, locale: str = "zh-CN", region: str = "CN"
     return f"https://news.google.com/rss/search?{params}"
 
 
-def fetch_google_news(query: str, start: datetime, end: datetime, *, source_name: str = "Google News", source_url: str = "https://news.google.com/", region_hint: str = "全球", locale: str = "zh-CN", region: str = "CN") -> list[RawItem]:
-    rss_query = f"{query} when:{max((end - start).days, 1)}d"
-    url = google_news_rss_url(rss_query, locale=locale, region=region)
+def fetch_rss(url: str, query: str, start: datetime, end: datetime, *, source_name: str, source_url: str, region_hint: str) -> list[RawItem]:
     try:
         response = request_with_retries("GET", url, headers={"Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.8"})
     except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Google News fetch failed: query=%s error=%s", query, exc)
+        LOGGER.warning("RSS fetch failed: source=%s query=%s error=%s", source_name, query, exc)
         return []
     try:
         root = ET.fromstring(response.content)
     except ET.ParseError as exc:
-        LOGGER.warning("Google News RSS parse failed: query=%s error=%s", query, exc)
+        LOGGER.warning("RSS parse failed: source=%s query=%s error=%s", source_name, query, exc)
         return []
     items: list[RawItem] = []
     for entry in root.findall("./channel/item"):
@@ -210,25 +209,143 @@ def fetch_google_news(query: str, start: datetime, end: datetime, *, source_name
     return items
 
 
+def fetch_google_news(query: str, start: datetime, end: datetime, *, source_name: str = "Google News", source_url: str = "https://news.google.com/", region_hint: str = "全球", locale: str = "zh-CN", region: str = "CN") -> list[RawItem]:
+    rss_query = f"{query} when:{max((end - start).days, 1)}d"
+    return fetch_rss(google_news_rss_url(rss_query, locale=locale, region=region), query, start, end, source_name=source_name, source_url=source_url, region_hint=region_hint)
+
+
+def bing_news_rss_url(query: str, *, market: str = "zh-CN") -> str:
+    params = urllib.parse.urlencode({"q": query, "format": "rss", "mkt": market, "setlang": "zh-cn"})
+    return f"https://www.bing.com/news/search?{params}"
+
+
+def fetch_bing_news(query: str, start: datetime, end: datetime, *, source_name: str = "Bing News RSS", source_url: str = "https://www.bing.com/news/search?format=rss", region_hint: str = "中国") -> list[RawItem]:
+    return fetch_rss(bing_news_rss_url(query), query, start, end, source_name=source_name, source_url=source_url, region_hint=region_hint)
+
+
+def fetch_sogou_weixin(query: str, start: datetime, end: datetime, *, source_name: str = "搜狗微信", source_url: str = "https://weixin.sogou.com/weixin", limit: int = 10) -> list[RawItem]:
+    params = urllib.parse.urlencode({"type": "2", "query": query, "ie": "utf8", "s_from": "input", "_sug_": "n", "_sug_type_": ""})
+    url = f"https://weixin.sogou.com/weixin?{params}"
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://weixin.sogou.com/",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    try:
+        response = request_with_retries("GET", url, headers=headers, retries=1, timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Sogou Weixin fetch failed: query=%s error=%s", query, exc)
+        return []
+    soup = BeautifulSoup(response.text, "html.parser")
+    items: list[RawItem] = []
+    for node in soup.select("li[id^=sogou_vr_]")[:limit]:
+        a = node.select_one("h3 a") or node.select_one("a")
+        if not a:
+            continue
+        title = strip_html(a.get_text(" "))
+        href = a.get("href") or ""
+        link = urllib.parse.urljoin("https://weixin.sogou.com/", href)
+        summary = strip_html(" ".join(x.get_text(" ") for x in node.select("p.txt-info, .txt-info")))
+        account = strip_html(" ".join(x.get_text(" ") for x in node.select("a.account, .account")))
+        date_text = strip_html(" ".join(x.get_text(" ") for x in node.select("span.s2, .s2")))
+        published_at = ""
+        dt = parse_datetime(date_text)
+        if dt:
+            published_at = dt.isoformat()
+        if not title or not link:
+            continue
+        if published_at and not in_window(published_at, start, end):
+            continue
+        if account:
+            summary = f"公众号：{account}。{summary}".strip("。")
+        items.append(RawItem(title, link, source_name, source_url, published_at, summary, "中国/微信", query))
+    return items
+
+
+def gdelt_doc_url(query: str, start: datetime, end: datetime) -> str:
+    start_dt = start.astimezone(timezone.utc).strftime("%Y%m%d%H%M%S")
+    end_dt = end.astimezone(timezone.utc).strftime("%Y%m%d%H%M%S")
+    params = urllib.parse.urlencode({
+        "query": query,
+        "mode": "artlist",
+        "format": "json",
+        "maxrecords": "75",
+        "sort": "hybridrel",
+        "startdatetime": start_dt,
+        "enddatetime": end_dt,
+    })
+    return f"https://api.gdeltproject.org/api/v2/doc/doc?{params}"
+
+
+def fetch_gdelt_doc(query: str, start: datetime, end: datetime, *, source_name: str = "GDELT DOC", source_url: str = "https://api.gdeltproject.org/api/v2/doc/doc", region_hint: str = "中国/全球") -> list[RawItem]:
+    url = gdelt_doc_url(query, start, end)
+    try:
+        response = request_with_retries("GET", url, headers={"Accept": "application/json"}, retries=1, timeout=30)
+        payload = response.json()
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("GDELT fetch failed: query=%s error=%s", query, exc)
+        return []
+    articles = payload.get("articles") or []
+    items: list[RawItem] = []
+    for article in articles:
+        title = strip_html(article.get("title") or "")
+        link = article.get("url") or ""
+        summary = strip_html(article.get("seendate") or article.get("domain") or "")
+        published_at = ""
+        seendate = article.get("seendate")
+        dt = parse_datetime(seendate)
+        if dt:
+            published_at = dt.isoformat()
+        if published_at and not in_window(published_at, start, end):
+            continue
+        if title and link:
+            items.append(RawItem(title, link, source_name, source_url, published_at, summary, region_hint, query))
+    return items
+
+
 def fetch_site_source(source: SourceConfig, start: datetime, end: datetime) -> list[RawItem]:
     results: list[RawItem] = []
     base = source.site_query or urllib.parse.urlparse(source.url).netloc
     for keyword in source.keywords:
         results.extend(fetch_google_news(f"{base} {keyword}", start, end, source_name=source.name, source_url=source.url, region_hint="中国", locale="zh-CN", region="CN"))
+        results.extend(fetch_bing_news(f"{base} {keyword}", start, end, source_name=f"{source.name} - Bing补充", source_url=source.url, region_hint="中国"))
     return results
 
 
-def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 160) -> tuple[list[RawItem], list[str]]:
+def fetch_source(source: SourceConfig, start: datetime, end: datetime) -> list[RawItem]:
+    if source.kind == "cninfo_api":
+        return fetch_cninfo(source, start, end)
+    if source.kind == "google_news_site":
+        return fetch_site_source(source, start, end)
+    if source.kind == "google_news_search":
+        results: list[RawItem] = []
+        for keyword in source.keywords:
+            results.extend(fetch_google_news(keyword, start, end, source_name=source.name, source_url=source.url, region_hint="中国", locale="zh-CN", region="CN"))
+        return results
+    if source.kind == "bing_news_search":
+        results = []
+        for keyword in source.keywords:
+            results.extend(fetch_bing_news(keyword, start, end, source_name=source.name, source_url=source.url, region_hint="中国"))
+        return results
+    if source.kind == "sogou_weixin_search":
+        results = []
+        for keyword in source.keywords:
+            results.extend(fetch_sogou_weixin(keyword, start, end, source_name=source.name, source_url=source.url))
+        return results
+    if source.kind == "gdelt_doc":
+        results = []
+        for keyword in source.keywords:
+            results.extend(fetch_gdelt_doc(keyword, start, end, source_name=source.name, source_url=source.url))
+        return results
+    raise ValueError(f"unsupported source kind: {source.kind} ({source.name})")
+
+
+def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -> tuple[list[RawItem], list[str]]:
     errors: list[str] = []
     candidates: list[RawItem] = []
-    for source in CHINA_SOURCES:
+    for source in CHINA_SOURCES + CHINA_NEWS_SOURCES:
         try:
-            if source.kind == "cninfo_api":
-                candidates.extend(fetch_cninfo(source, start, end))
-            elif source.kind == "google_news_site":
-                candidates.extend(fetch_site_source(source, start, end))
-            else:
-                errors.append(f"unsupported source kind: {source.kind} ({source.name})")
+            candidates.extend(fetch_source(source, start, end))
         except Exception as exc:  # noqa: BLE001
             msg = f"source failed: {source.name}: {exc}"
             LOGGER.warning(msg)
@@ -237,6 +354,7 @@ def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 160) -
         candidates.extend(fetch_google_news(query, start, end, source_name="Google News - Global M&A", source_url="https://news.google.com/", region_hint="全球", locale="en-US", region="US"))
     for query in HKEX_QUERIES:
         candidates.extend(fetch_google_news(query, start, end, source_name="Google News - HKEXnews", source_url="https://www.hkexnews.hk/", region_hint="中国香港/全球", locale="zh-CN", region="CN"))
+        candidates.extend(fetch_bing_news(query, start, end, source_name="Bing News - HKEXnews", source_url="https://www.hkexnews.hk/", region_hint="中国香港/全球"))
     deduped = dedupe_items(candidates)
     deduped.sort(key=lambda x: parse_datetime(x.published_at) or start, reverse=True)
     return deduped[:max_items], errors
