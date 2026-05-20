@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from json import JSONDecodeError
 from typing import Any
 
 import requests
@@ -16,6 +17,7 @@ from .sources import RawItem, normalize_text
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
+MAX_CASES_PER_BATCH = 12
 
 
 class DeepSeekError(RuntimeError):
@@ -28,14 +30,19 @@ def extract_json_object(text: str) -> dict[str, Any]:
     cleaned = re.sub(r"\s*```$", "", cleaned)
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", cleaned, flags=re.S)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+    except JSONDecodeError as first_error:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise first_error
+        candidate = cleaned[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except JSONDecodeError:
+            raise first_error
 
 
-def deepseek_chat(messages: list[dict[str, str]], *, model: str | None = None) -> str:
+def deepseek_chat(messages: list[dict[str, str]], *, model: str | None = None, timeout: int = 120) -> str:
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         raise DeepSeekError("DEEPSEEK_API_KEY is not set")
@@ -44,8 +51,14 @@ def deepseek_chat(messages: list[dict[str, str]], *, model: str | None = None) -
     response = requests.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model_name, "messages": messages, "temperature": 0.1, "stream": False, "response_format": {"type": "json_object"}},
-        timeout=120,
+        json={
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.1,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        },
+        timeout=timeout,
     )
     if response.status_code >= 400:
         raise DeepSeekError(f"DeepSeek API error {response.status_code}: {response.text[:1000]}")
@@ -56,9 +69,21 @@ def deepseek_chat(messages: list[dict[str, str]], *, model: str | None = None) -
         raise DeepSeekError(f"Unexpected DeepSeek response: {data}") from exc
 
 
+def compact_item(item: RawItem) -> dict[str, str]:
+    return {
+        "title": str(item.title or "")[:180],
+        "url": str(item.url or "")[:500],
+        "source_name": str(item.source_name or "")[:80],
+        "published_at": str(item.published_at or "")[:40],
+        "summary": str(item.summary or "")[:260],
+        "region_hint": str(item.region_hint or "")[:40],
+        "query": str(item.query or "")[:120],
+    }
+
+
 def build_prompt(items: list[RawItem], start_label: str, end_label: str) -> list[dict[str, str]]:
-    raw_items = [item.as_dict() for item in items]
-    system = "你是资深并购案例研究员。把公告/新闻候选结构化为周度并购案例表。只基于给定候选，不要编造；无法确认的信息填 '-'。输出严格 JSON 对象。"
+    raw_items = [compact_item(item) for item in items]
+    system = "你是资深并购案例研究员。把公告/新闻候选结构化为周度并购案例表。只基于给定候选，不要编造；无法确认的信息填 '-'。必须输出可被 json.loads 解析的严格 JSON 对象。"
     user = f"""
 请从 {start_label} 至 {end_label} 的候选信息中抽取真实、可研究的并购案例，并剔除重复项、规则说明、纯问询进展、无明确交易主体的传闻。
 
@@ -73,15 +98,35 @@ A 列「案例分类」只能从以下 10 个分类中选择：
 结构化要求：
 1. 输出 JSON 对象，格式为：{{"cases": [{{...}}], "discarded_count": 数字}}。
 2. cases 中每行字段必须包含：案例分类、并购方、目标方、案例所属行业、并购方主营业务、标的主营业务、案例一句话简介、交易时间、交易对价、交易状态、备注、来源名称、URL、发布日期、地区。
-3. 案例一句话简介要像投行案例库标题一样精炼，突出交易亮点或资本运作特点，30-60 个中文字符为宜。
-4. 交易状态优先用：已完成、进行中、审批中、终止、意向、未知。
-5. 中国 A 股/港股案例优先保留；全球新闻只保留具有明确交易金额、交易双方或战略意义的案例。
-6. 严格去重，同一交易只输出一行，URL 取最能证明交易的来源。
+3. 每批最多输出 {MAX_CASES_PER_BATCH} 个高质量案例；宁缺毋滥。
+4. 案例一句话简介要像投行案例库标题一样精炼，突出交易亮点或资本运作特点，30-60 个中文字符为宜。
+5. 交易状态优先用：已完成、进行中、审批中、终止、意向、未知。
+6. 中国 A 股/港股案例优先保留；全球新闻只保留具有明确交易金额、交易双方或战略意义的案例。
+7. 严格去重，同一交易只输出一行，URL 取最能证明交易的来源。
+8. JSON 规则：只能输出 JSON；字符串中的英文双引号必须转义；不得输出尾随逗号、注释、Markdown、未闭合字符串或未转义换行。
 
 候选信息 JSON：
-{json.dumps(raw_items, ensure_ascii=False, indent=2)}
+{json.dumps(raw_items, ensure_ascii=False, separators=(",", ":"))}
 """.strip()
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def repair_json(content: str, error: Exception) -> dict[str, Any]:
+    messages = [
+        {"role": "system", "content": "你是 JSON 修复器。只输出修复后的严格 JSON 对象，不添加解释。"},
+        {
+            "role": "user",
+            "content": (
+                "下面文本本应是 JSON，但无法解析。请在不新增事实、不改含义的前提下，修复为可被 json.loads 解析的 JSON 对象。"
+                f"\n解析错误：{error}"
+                "\n目标格式：{\"cases\":[...],\"discarded_count\":数字}。"
+                "\n待修复文本：\n"
+                f"{content[:12000]}"
+            ),
+        },
+    ]
+    repaired = deepseek_chat(messages, timeout=120)
+    return extract_json_object(repaired)
 
 
 def normalize_case(row: dict[str, Any]) -> dict[str, str]:
@@ -130,11 +175,11 @@ def rough_cases_from_items(items: list[RawItem], limit: int = 30) -> list[dict[s
             "案例所属行业": "-",
             "并购方主营业务": "-",
             "标的主营业务": "-",
-            "案例一句话简介": item.title[:120],
+            "案例一句话简介": str(item.title)[:120],
             "交易时间": item.published_at[:10] if item.published_at else "-",
             "交易对价": "-",
             "交易状态": "未知",
-            "备注": f"DeepSeek 未启用，需人工复核。原始摘要：{item.summary[:180]}",
+            "备注": f"DeepSeek 结构化失败后的候选保底行，需人工复核。原始摘要：{str(item.summary)[:180]}",
             "来源名称": item.source_name,
             "URL": item.url,
             "发布日期": item.published_at,
@@ -143,20 +188,34 @@ def rough_cases_from_items(items: list[RawItem], limit: int = 30) -> list[dict[s
     return dedupe_cases(cases)
 
 
-def structure_cases(items: list[RawItem], *, start_label: str, end_label: str, batch_size: int = 35, max_cases: int = 80) -> list[dict[str, str]]:
+def parse_deepseek_batch(batch: list[RawItem], start_label: str, end_label: str, batch_index: int) -> list[dict[str, str]]:
+    content = ""
+    try:
+        content = deepseek_chat(build_prompt(batch, start_label, end_label))
+        try:
+            parsed = extract_json_object(content)
+        except JSONDecodeError as exc:
+            LOGGER.warning("DeepSeek returned malformed JSON for batch %s; attempting repair: %s", batch_index, exc)
+            parsed = repair_json(content, exc)
+        batch_cases = parsed.get("cases") or []
+        if not isinstance(batch_cases, list):
+            raise DeepSeekError(f"DeepSeek cases field is not a list: {parsed}")
+        normalized = [normalize_case(row) for row in batch_cases if isinstance(row, dict)]
+        return normalized[:MAX_CASES_PER_BATCH]
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("DeepSeek batch %s failed; using rough fallback for this batch. error=%s content_prefix=%s", batch_index, exc, content[:500])
+        return rough_cases_from_items(batch, limit=3)
+
+
+def structure_cases(items: list[RawItem], *, start_label: str, end_label: str, batch_size: int = 20, max_cases: int = 80) -> list[dict[str, str]]:
     if not items:
         return []
     if not os.getenv("DEEPSEEK_API_KEY"):
         LOGGER.warning("DEEPSEEK_API_KEY is not set; using rough fallback rows")
         return rough_cases_from_items(items, limit=max_cases)
     all_cases: list[dict[str, str]] = []
-    for batch in chunked(items, batch_size):
-        content = deepseek_chat(build_prompt(batch, start_label, end_label))
-        parsed = extract_json_object(content)
-        batch_cases = parsed.get("cases") or []
-        if not isinstance(batch_cases, list):
-            raise DeepSeekError(f"DeepSeek cases field is not a list: {parsed}")
-        all_cases.extend(normalize_case(row) for row in batch_cases if isinstance(row, dict))
+    for batch_index, batch in enumerate(chunked(items, batch_size), start=1):
+        all_cases.extend(parse_deepseek_batch(batch, start_label, end_label, batch_index))
     return dedupe_cases(all_cases)[:max_cases]
 
 
