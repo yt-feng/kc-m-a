@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: weekly-mna-cases-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   collect:
     runs-on: ubuntu-latest
@@ -22,10 +26,14 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_MODEL: deepseek-v4-flash
       MNA_OUTPUT_DIR: outputs
+      MAX_RAW_ITEMS: "450"
+      MAX_STRUCTURED_CASES: "120"
       DAYS: ${{ github.event.inputs.days || '7' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,13 +48,42 @@ jobs:
         run: python -m mna_weekly_tracker.main --days "$DAYS" --output-dir outputs
 
       - name: Commit generated Excel
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add outputs/*.xlsx
-          if git diff --cached --quiet; then
-            echo "No Excel changes to commit."
-          else
-            git commit -m "chore: add weekly M&A cases $(date +'%Y-%m-%d')"
-            git push
+
+          shopt -s nullglob
+          generated_files=(outputs/*.xlsx)
+          if [ ${#generated_files[@]} -eq 0 ]; then
+            echo "No Excel files generated."
+            exit 0
           fi
+
+          tmp_dir="$(mktemp -d)"
+          cp -f outputs/*.xlsx "$tmp_dir"/
+          commit_msg="chore: add weekly M&A cases $(date +'%Y-%m-%d')"
+
+          for attempt in 1 2 3; do
+            echo "Commit attempt $attempt"
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p outputs
+            cp -f "$tmp_dir"/*.xlsx outputs/
+            git add outputs/*.xlsx
+            if git diff --cached --quiet; then
+              echo "No Excel changes to commit."
+              exit 0
+            fi
+            git commit -m "$commit_msg"
+            if git push origin HEAD:main; then
+              echo "Pushed generated Excel."
+              exit 0
+            fi
+            echo "Push rejected, retrying after refreshing origin/main."
+            sleep 5
+          done
+
+          echo "Failed to push generated Excel after retries."
+          exit 1
