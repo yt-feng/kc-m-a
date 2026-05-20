@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .deepseek import structure_cases
 from .excel import build_workbook, save_workbook
-from .sources import RawItem, fetch_all_candidates, week_window
+from .sources_fixed import RawItem, fetch_all_candidates, week_window
 
 LOGGER = logging.getLogger(__name__)
 
