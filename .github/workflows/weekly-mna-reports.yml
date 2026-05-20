@@ -26,9 +26,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: weekly-mna-case-reports-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   generate_reports:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -39,9 +44,12 @@ jobs:
       REPORT_LOOKBACK_DAYS: ${{ github.event.inputs.days || '7' }}
       REPORT_OUTPUT_ROOT: case_reports
       REPORT_MAX_RAW_ITEMS: "450"
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,13 +64,41 @@ jobs:
         run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --days "$REPORT_LOOKBACK_DAYS" --output-root "$REPORT_OUTPUT_ROOT"
 
       - name: Commit generated reports
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add case_reports/**/*.docx case_reports/_manifests/*.json
-          if git diff --cached --quiet; then
-            echo "No report changes to commit."
-          else
-            git commit -m "chore: add M&A case reports $(date +'%Y-%m-%d')"
-            git push
+
+          if ! find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) | grep -q .; then
+            echo "No report files generated."
+            exit 0
           fi
+
+          tmp_dir="$(mktemp -d)"
+          mkdir -p "$tmp_dir/case_reports"
+          cp -a case_reports/. "$tmp_dir/case_reports/"
+          commit_msg="chore: add M&A case reports $(date +'%Y-%m-%d')"
+
+          for attempt in 1 2 3; do
+            echo "Commit attempt $attempt"
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p case_reports
+            cp -a "$tmp_dir/case_reports/." case_reports/
+            git add case_reports
+            if git diff --cached --quiet; then
+              echo "No report changes to commit."
+              exit 0
+            fi
+            git commit -m "$commit_msg"
+            if git push origin HEAD:main; then
+              echo "Pushed generated reports."
+              exit 0
+            fi
+            echo "Push rejected, retrying after refreshing origin/main."
+            sleep 5
+          done
+
+          echo "Failed to push generated reports after retries."
+          exit 1
