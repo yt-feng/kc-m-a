@@ -13,11 +13,81 @@ from docx.shared import Cm, Pt
 
 from .config import CATEGORY_FOLDER_NAMES
 
+FIRST_LINE_CHARS = "200"  # OOXML uses hundredths of a character. 200 = 2 Chinese characters.
+ZERO = "0"
+QUOTE_CHARS = set('“”‘’"')
+
 
 def sanitize_filename(value: str, max_len: int = 80) -> str:
     value = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", value).strip(" ._")
     value = re.sub(r"\s+", "", value)
     return value[:max_len] or "case_report"
+
+
+def get_or_add(parent, tag: str):
+    child = parent.find(qn(tag))
+    if child is None:
+        child = OxmlElement(tag)
+        parent.append(child)
+    return child
+
+
+def style_ppr(style):
+    p_pr = style._element.find(qn("w:pPr"))
+    if p_pr is None:
+        p_pr = OxmlElement("w:pPr")
+        style._element.append(p_pr)
+    return p_pr
+
+
+def set_spacing_xml(p_pr) -> None:
+    spacing = get_or_add(p_pr, "w:spacing")
+    # Force Word to display both 段前 and 段后 as 0 行 / 0 磅.
+    spacing.set(qn("w:before"), ZERO)
+    spacing.set(qn("w:after"), ZERO)
+    spacing.set(qn("w:beforeLines"), ZERO)
+    spacing.set(qn("w:afterLines"), ZERO)
+
+
+def set_first_line_chars_xml(p_pr, chars: str = FIRST_LINE_CHARS) -> None:
+    ind = get_or_add(p_pr, "w:ind")
+    # Remove absolute first-line indent; otherwise Word shows 0.99cm instead of 2 characters.
+    for attr in ("w:firstLine", "w:hanging", "w:hangingChars"):
+        ind.attrib.pop(qn(attr), None)
+    ind.set(qn("w:firstLineChars"), chars)
+
+
+def set_no_first_line_xml(p_pr) -> None:
+    ind = get_or_add(p_pr, "w:ind")
+    for attr in ("w:firstLine", "w:firstLineChars", "w:hanging", "w:hangingChars"):
+        ind.attrib.pop(qn(attr), None)
+
+
+def set_paragraph_spacing(paragraph) -> None:
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    set_spacing_xml(paragraph._p.get_or_add_pPr())
+
+
+def set_paragraph_first_line_chars(paragraph, chars: str = FIRST_LINE_CHARS) -> None:
+    paragraph.paragraph_format.first_line_indent = None
+    set_first_line_chars_xml(paragraph._p.get_or_add_pPr(), chars)
+
+
+def set_paragraph_no_first_line(paragraph) -> None:
+    paragraph.paragraph_format.first_line_indent = None
+    set_no_first_line_xml(paragraph._p.get_or_add_pPr())
+
+
+def set_style_spacing(style) -> None:
+    style.paragraph_format.space_before = Pt(0)
+    style.paragraph_format.space_after = Pt(0)
+    set_spacing_xml(style_ppr(style))
+
+
+def set_style_first_line_chars(style, chars: str = FIRST_LINE_CHARS) -> None:
+    style.paragraph_format.first_line_indent = None
+    set_first_line_chars_xml(style_ppr(style), chars)
 
 
 def set_run_font(run, *, east_asia: str = "仿宋", latin: str = "Times New Roman", size_pt: float = 14.0, bold: bool = False) -> None:
@@ -35,6 +105,27 @@ def set_run_font(run, *, east_asia: str = "仿宋", latin: str = "Times New Roma
     fonts.set(qn("w:cs"), latin)
 
 
+def add_text_with_quote_font(paragraph, text: str, *, east_asia: str = "仿宋", size_pt: float = 14.0, bold: bool = False) -> None:
+    buffer = ""
+
+    def flush() -> None:
+        nonlocal buffer
+        if buffer:
+            run = paragraph.add_run(buffer)
+            set_run_font(run, east_asia=east_asia, size_pt=size_pt, bold=bold)
+            buffer = ""
+
+    for char in text:
+        if char in QUOTE_CHARS:
+            flush()
+            run = paragraph.add_run(char)
+            # Quotation marks must render as Times New Roman, including East Asian font mapping.
+            set_run_font(run, east_asia="Times New Roman", latin="Times New Roman", size_pt=size_pt, bold=bold)
+        else:
+            buffer += char
+    flush()
+
+
 def set_doc_defaults(doc: Document) -> None:
     section = doc.sections[0]
     section.page_width = Cm(21.0)
@@ -43,47 +134,43 @@ def set_doc_defaults(doc: Document) -> None:
     section.bottom_margin = Cm(2.54)
     section.left_margin = Cm(3.175)
     section.right_margin = Cm(3.175)
-    styles = doc.styles
-    normal = styles["Normal"]
+    normal = doc.styles["Normal"]
     normal.font.name = "Times New Roman"
     normal.font.size = Pt(14)
     normal._element.rPr.rFonts.set(qn("w:eastAsia"), "仿宋")
     normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    normal.paragraph_format.first_line_indent = Pt(28)
+    set_style_spacing(normal)
+    set_style_first_line_chars(normal)
 
 
 def add_title(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_after = Pt(12)
-    run = p.add_run(text)
-    set_run_font(run, east_asia="黑体", size_pt=15, bold=False)
+    set_paragraph_spacing(p)
+    set_paragraph_no_first_line(p)
+    add_text_with_quote_font(p, text, east_asia="黑体", size_pt=15, bold=False)
 
 
 def add_heading(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
-    p.paragraph_format.first_line_indent = Pt(10)
-    p.paragraph_format.space_before = Pt(8)
-    p.paragraph_format.space_after = Pt(4)
-    run = p.add_run(text)
-    set_run_font(run, east_asia="仿宋", size_pt=14, bold=True)
+    set_paragraph_spacing(p)
+    set_paragraph_no_first_line(p)
+    add_text_with_quote_font(p, text, east_asia="仿宋", size_pt=14, bold=True)
 
 
 def add_body(doc: Document, text: str, *, bold_prefix: bool = False) -> None:
     p = doc.add_paragraph()
-    p.paragraph_format.first_line_indent = Pt(28)
     p.paragraph_format.line_spacing = 1.0
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    set_paragraph_spacing(p)
+    set_paragraph_first_line_chars(p)
     if bold_prefix and "。" in text:
         prefix, rest = text.split("。", 1)
-        run = p.add_run(prefix + "。")
-        set_run_font(run, size_pt=14, bold=True)
+        add_text_with_quote_font(p, prefix + "。", size_pt=14, bold=True)
         if rest:
-            run2 = p.add_run(rest)
-            set_run_font(run2, size_pt=14)
+            add_text_with_quote_font(p, rest, size_pt=14, bold=False)
     else:
-        run = p.add_run(text)
-        set_run_font(run, size_pt=14)
+        add_text_with_quote_font(p, text, size_pt=14, bold=False)
 
 
 def normalize_sections(article: dict[str, object]) -> list[tuple[str, list[str]]]:
