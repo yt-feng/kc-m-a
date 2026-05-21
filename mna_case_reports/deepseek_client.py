@@ -20,7 +20,10 @@ class DeepSeekError(RuntimeError):
 
 
 def _strip_code_fence(text: str) -> str:
-    cleaned = text.strip()
+    cleaned = str(text or "").strip()
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+    if fenced:
+        return fenced.group(1).strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     return cleaned.strip()
@@ -28,18 +31,50 @@ def _strip_code_fence(text: str) -> str:
 
 def _extract_json_span(text: str) -> str:
     cleaned = _strip_code_fence(text)
-    if cleaned.startswith("{") and cleaned.endswith("}"):
-        return cleaned
     start = cleaned.find("{")
     end = cleaned.rfind("}")
-    if start >= 0 and end > start:
-        return cleaned[start : end + 1]
-    raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+    if start == -1 or end == -1 or end <= start:
+        raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+    return cleaned[start : end + 1]
+
+
+def _error_snippet(text: str, pos: int, radius: int = 240) -> str:
+    start = max(0, pos - radius)
+    end = min(len(text), pos + radius)
+    return text[start:end].replace("\n", " ")
+
+
+def repair_json_like(text: str) -> str:
+    """Local repair rules borrowed from gen_rpt's robust JSON parser.
+
+    They cover the most common LLM JSON failures seen in long article output:
+    smart quotes, missing commas between adjacent objects/fields/strings, and
+    trailing commas. This is intentionally conservative and is applied before
+    asking DeepSeek to repair its own output.
+    """
+    fixed = _extract_json_span(text)
+    fixed = fixed.replace("\ufeff", "").replace("\u0000", "")
+    fixed = fixed.replace("“", '"').replace("”", '"')
+    fixed = fixed.replace("‘", "'").replace("’", "'")
+    fixed = re.sub(r"}\s*{", "},\n{", fixed)
+    fixed = re.sub(r"([}\]])\s*(\"[A-Za-z_][A-Za-z0-9_\-]*\"\s*:)", r"\1,\n\2", fixed)
+    fixed = re.sub(r"(\"(?:[^\"\\]|\\.)*\")\s*(\"[A-Za-z_][A-Za-z0-9_\-]*\"\s*:)", r"\1,\n\2", fixed)
+    fixed = re.sub(r"(\"(?:[^\"\\]|\\.)*\")\s*(\{)", r"\1,\n\2", fixed)
+    fixed = re.sub(r"(\])\s*(\{)", r"\1,\n\2", fixed)
+    fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
+    return fixed
 
 
 def extract_json(text: str) -> dict[str, Any]:
-    cleaned = _extract_json_span(text)
-    return json.loads(cleaned)
+    cleaned = repair_json_like(text)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        snippet = _error_snippet(cleaned, exc.pos)
+        raise json.JSONDecodeError(f"{exc.msg}. Nearby text: {snippet}", exc.doc, exc.pos) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected JSON object, got {type(parsed).__name__}")
+    return parsed
 
 
 def _api_config(model: str | None = None) -> tuple[str, str, str]:
@@ -75,40 +110,40 @@ def _post_chat(messages: list[dict[str, str]], *, model: str | None = None, time
 
 
 def repair_json_text(text: str, *, model: str | None = None, timeout: int = 120) -> dict[str, Any]:
-    """Ask the model to repair malformed JSON without changing the substance.
-
-    Long-form article JSON occasionally returns with a missing comma in a nested
-    paragraphs array. This keeps the action from failing after many reports have
-    already been generated.
-    """
-    candidate = _extract_json_span(text)
+    candidate = repair_json_like(text)
     if len(candidate) > 60000:
         candidate = candidate[:60000]
     messages = [
-        {
-            "role": "system",
-            "content": "你是JSON修复器。只输出合法JSON对象，不要新增事实，不要删除字段，不要输出解释。",
-        },
+        {"role": "system", "content": "你是JSON修复器。只输出合法JSON对象，不要新增事实，不要删除字段，不要输出解释。"},
         {
             "role": "user",
             "content": "下面内容接近JSON但语法可能有缺失逗号、错误引号或尾逗号。请修复为合法JSON对象：\n" + candidate,
         },
     ]
     repaired = _post_chat(messages, model=model, timeout=timeout, temperature=0.0)
-    return extract_json(repaired)
+    try:
+        return extract_json(repaired)
+    except Exception:
+        locally_repaired = repair_json_like(repaired)
+        return json.loads(locally_repaired)
 
 
 def chat_json(messages: list[dict[str, str]], *, model: str | None = None, timeout: int = 180, repair: bool = True) -> dict[str, Any]:
     content = _post_chat(messages, model=model, timeout=timeout, temperature=0.2)
     try:
         return extract_json(content)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as first_exc:  # noqa: BLE001
         if repair:
+            locally_repaired = repair_json_like(content)
             try:
-                LOGGER.warning("DeepSeek returned malformed JSON; attempting repair: %s", exc)
-                return repair_json_text(content, model=model, timeout=min(timeout, 120))
-            except Exception as repair_exc:  # noqa: BLE001
-                snippet = content[:2000].replace("\n", " ")
-                raise DeepSeekError(f"DeepSeek JSON repair failed: {repair_exc}; original prefix={snippet}") from repair_exc
+                LOGGER.warning("DeepSeek returned malformed JSON; local repair succeeded after parse error: %s", first_exc)
+                return json.loads(locally_repaired)
+            except Exception as local_exc:  # noqa: BLE001
+                try:
+                    LOGGER.warning("DeepSeek malformed JSON local repair failed; attempting model repair: %s", local_exc)
+                    return repair_json_text(locally_repaired, model=model, timeout=min(timeout, 120))
+                except Exception as repair_exc:  # noqa: BLE001
+                    snippet = content[:2000].replace("\n", " ")
+                    raise DeepSeekError(f"DeepSeek JSON repair failed: {repair_exc}; original prefix={snippet}") from repair_exc
         snippet = content[:2000].replace("\n", " ")
-        raise DeepSeekError(f"Unexpected DeepSeek response JSON: {exc}; prefix={snippet}") from exc
+        raise DeepSeekError(f"Unexpected DeepSeek response JSON: {first_exc}; prefix={snippet}") from first_exc
