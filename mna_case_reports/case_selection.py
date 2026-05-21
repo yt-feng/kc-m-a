@@ -13,7 +13,8 @@ from zoneinfo import ZoneInfo
 
 from mna_weekly_tracker.sources_rich import RawItem, fetch_all_candidates
 
-from .config import CASE_DISCOVERY_QUERIES, CATEGORIES, CLASSIC_CASE_SEEDS, DOMESTIC_CATEGORY_HINTS, TOPIC_SELECTION_RULES
+from .case_pool import EXTENDED_CASE_POOL
+from .config import CASE_DISCOVERY_QUERIES, CATEGORIES, CLASSIC_CASE_SEEDS, TOPIC_SELECTION_RULES
 from .deepseek_client import chat_json
 
 LOGGER = logging.getLogger(__name__)
@@ -33,6 +34,13 @@ class CaseBrief:
     is_classic: bool = False
     completed_year: str = ""
     is_completed: bool = False
+    acquirer: str = ""
+    target: str = ""
+    deal_value: str = ""
+    deal_status: str = ""
+    buyer_motivation: str = ""
+    seller_motivation: str = ""
+    financial_highlights: str = ""
 
     def key(self) -> str:
         return f"{self.case_name}|{self.category}".lower().strip()
@@ -56,6 +64,13 @@ class CaseBrief:
             "is_classic": self.is_classic,
             "completed_year": self.completed_year,
             "is_completed": self.is_completed,
+            "acquirer": self.acquirer,
+            "target": self.target,
+            "deal_value": self.deal_value,
+            "deal_status": self.deal_status,
+            "buyer_motivation": self.buyer_motivation,
+            "seller_motivation": self.seller_motivation,
+            "financial_highlights": self.financial_highlights,
         }
 
 
@@ -101,20 +116,51 @@ def existing_counts(report_root: Path) -> Counter[str]:
     return counts
 
 
-def seed_briefs() -> list[CaseBrief]:
-    return [
-        CaseBrief(
-            case_name=row["case_name"],
+def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False) -> list[CaseBrief]:
+    briefs: list[CaseBrief] = []
+    for row in rows:
+        case_name = str(row.get("case_name") or "").strip()
+        if not case_name:
+            continue
+        region = str(row.get("region") or "中国")
+        completed_year = str(row.get("completed_year") or infer_completed_year(case_name, str(row.get("why") or "")))
+        is_completed = str(row.get("is_completed", "true")).lower() == "true"
+        is_classic_raw = row.get("is_classic")
+        if is_classic_raw is None:
+            is_classic = default_classic or completed_year not in {"2025", "2026"}
+        else:
+            is_classic = str(is_classic_raw).lower() == "true"
+        brief = CaseBrief(
+            case_name=case_name,
             category=safe_category(row.get("category")),
-            region=row.get("region", "中国"),
-            why=row.get("why", "经典或代表性并购案例。"),
-            is_domestic=is_domestic_region(row.get("region", "中国")),
-            is_classic=row.get("completed_year") not in {"2025", "2026"},
-            completed_year=row.get("completed_year", ""),
-            is_completed=str(row.get("is_completed", "true")).lower() == "true",
+            region=region,
+            source_title=str(row.get("source_title") or case_name),
+            source_url=str(row.get("source_url") or ""),
+            published_at=str(row.get("published_at") or ""),
+            why=str(row.get("why") or "经典或代表性并购案例。"),
+            is_domestic=is_domestic_region(region),
+            is_classic=is_classic,
+            completed_year=completed_year,
+            is_completed=is_completed,
+            acquirer=str(row.get("acquirer") or ""),
+            target=str(row.get("target") or ""),
+            deal_value=str(row.get("deal_value") or ""),
+            deal_status=str(row.get("deal_status") or ""),
+            buyer_motivation=str(row.get("buyer_motivation") or ""),
+            seller_motivation=str(row.get("seller_motivation") or ""),
+            financial_highlights=str(row.get("financial_highlights") or ""),
         )
-        for row in CLASSIC_CASE_SEEDS
-    ]
+        if brief.is_allowed_topic():
+            briefs.append(brief)
+    return briefs
+
+
+def seed_briefs() -> list[CaseBrief]:
+    return rows_to_briefs(CLASSIC_CASE_SEEDS, default_classic=True)
+
+
+def extended_pool_briefs() -> list[CaseBrief]:
+    return rows_to_briefs(EXTENDED_CASE_POOL, default_classic=False)
 
 
 def candidates_from_weekly(days: int, max_items: int) -> list[RawItem]:
@@ -127,7 +173,7 @@ def candidates_from_weekly(days: int, max_items: int) -> list[RawItem]:
 def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[CaseBrief]:
     if not raw_items:
         return []
-    sample = [item.as_dict() for item in raw_items[: min(len(raw_items), 180)]]
+    sample = [item.as_dict() for item in raw_items[: min(len(raw_items), 220)]]
     messages = [
         {"role": "system", "content": "你是并购案例研究选题编辑。只输出 JSON。"},
         {
@@ -137,38 +183,38 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
                 f"选题规则：{TOPIC_SELECTION_RULES}"
                 "优先中国案例；交易主体、交易事件、完成时间、交易对价和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、未完成或终止交易。"
                 f"最多输出 {target_count} 个。分类只能用：{json.dumps(CATEGORIES, ensure_ascii=False)}。"
-                "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false}]}。"
+                "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false,\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_motivation\":...,\"seller_motivation\":...,\"financial_highlights\":...}]}。"
                 f"候选：{json.dumps(sample, ensure_ascii=False)}"
             ),
         },
     ]
     payload = chat_json(messages)
-    out: list[CaseBrief] = []
+    rows: list[dict[str, str]] = []
     for row in payload.get("cases", []):
         if not isinstance(row, dict):
             continue
         case_name = str(row.get("case_name") or "").strip()
         if not case_name:
             continue
-        region = str(row.get("region") or "中国")
         completed_year = str(row.get("completed_year") or infer_completed_year(case_name, str(row.get("source_title") or ""), str(row.get("published_at") or "")))
-        is_completed = bool(row.get("is_completed", infer_is_completed(case_name, str(row.get("source_title") or ""), str(row.get("why") or ""))))
-        is_classic = bool(row.get("is_classic", False))
-        brief = CaseBrief(
-            case_name=case_name,
-            category=safe_category(str(row.get("category") or "")),
-            region=region,
-            source_title=str(row.get("source_title") or ""),
-            source_url=str(row.get("source_url") or ""),
-            published_at=str(row.get("published_at") or ""),
-            why=str(row.get("why") or ""),
-            is_domestic=bool(row.get("is_domestic", is_domestic_region(region))),
-            is_classic=is_classic,
-            completed_year=completed_year,
-            is_completed=is_completed,
-        )
-        if brief.is_allowed_topic():
-            out.append(brief)
+        is_completed = row.get("is_completed", infer_is_completed(case_name, str(row.get("source_title") or ""), str(row.get("why") or "")))
+        row["completed_year"] = completed_year
+        row["is_completed"] = str(bool(is_completed)).lower()
+        rows.append(row)  # type: ignore[arg-type]
+    return rows_to_briefs(rows)
+
+
+def dedupe_briefs(briefs: list[CaseBrief]) -> list[CaseBrief]:
+    seen: set[str] = set()
+    out: list[CaseBrief] = []
+    for brief in briefs:
+        if not brief.is_allowed_topic():
+            continue
+        key = brief.key()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(brief)
     return out
 
 
@@ -181,20 +227,15 @@ def discover_backfill_cases(target_count: int) -> list[CaseBrief]:
     for query in CASE_DISCOVERY_QUERIES:
         raw.extend(fetch_google_news(query, start, end, source_name="Google News - backfill", source_url="https://news.google.com/", region_hint="中国"))
         raw.extend(fetch_bing_news(query, start, end, source_name="Bing News - backfill", source_url="https://www.bing.com/news/search", region_hint="中国"))
-    briefs = summarize_raw_items(raw, target_count=max(target_count, 20)) if raw else []
-    return briefs + seed_briefs()
+    live_briefs = summarize_raw_items(raw, target_count=max(target_count, 20)) if raw else []
+    pooled = live_briefs + extended_pool_briefs() + seed_briefs()
+    deduped = dedupe_briefs(pooled)
+    LOGGER.info("Backfill candidate pool: live=%s pool=%s seeds=%s deduped=%s target=%s", len(live_briefs), len(extended_pool_briefs()), len(seed_briefs()), len(deduped), target_count)
+    return deduped
 
 
 def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: int = 2, report_root: Path) -> list[CaseBrief]:
-    seen: set[str] = set()
-    deduped: list[CaseBrief] = []
-    for brief in briefs:
-        if not brief.is_allowed_topic():
-            continue
-        if brief.key() in seen:
-            continue
-        seen.add(brief.key())
-        deduped.append(brief)
+    deduped = dedupe_briefs(briefs)
     counts = existing_counts(report_root)
 
     def score(b: CaseBrief) -> tuple[int, int, int, int]:
@@ -220,12 +261,13 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
             if len(selected) < count:
                 selected.append(brief)
             else:
-                for idx in range(len(selected) - 1, -1, -1):
-                    if not selected[idx].is_domestic:
-                        selected[idx] = brief
-                        break
+                # Replace the least preferred non-domestic case first.
+                non_domestic_indexes = [i for i, item in enumerate(selected) if not item.is_domestic]
+                if non_domestic_indexes:
+                    selected[non_domestic_indexes[-1]] = brief
             domestic_now = sum(1 for x in selected if x.is_domestic)
             selected_keys = {s.key() for s in selected}
+    LOGGER.info("Selected %s report cases, including %s domestic cases, requested count=%s min_domestic=%s", len(selected[:count]), sum(1 for x in selected[:count] if x.is_domestic), count, min_domestic)
     return selected[:count]
 
 
