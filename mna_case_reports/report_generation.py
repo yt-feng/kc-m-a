@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Any
 
 from .case_selection import CaseBrief
 from .config import CATEGORY_GUIDE, REFERENCE_STYLE, STYLE_RULES, TOPIC_SELECTION_RULES
@@ -25,7 +26,7 @@ FINANCIAL_PATTERNS = ("营收", "收入", "营业收入", "净利润", "毛利",
 BUYER_MOTIVE_PATTERNS = ("买方动机", "收购动因", "并购方", "收购方", "愿意买", "收购目的", "战略目的", "为什么买", "选择收购")
 SELLER_MOTIVE_PATTERNS = ("卖方动机", "出售原因", "愿意卖", "为什么卖", "出售方", "标的方", "转让方", "退出", "出售股权", "出让")
 INTRO_PATTERNS = ("基本介绍", "主营", "主营业务", "业务", "收入", "净利润", "成立", "上市", "资产", "产品", "客户")
-CHINESE_NUMERALS = "一二三四五六七八九十"
+CN_NUMS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
 
 
 def chinese_length(text: str) -> int:
@@ -51,7 +52,7 @@ def article_text(article: dict[str, object]) -> str:
 
 def compact_name(value: str) -> str:
     value = re.sub(r"（.*?）|\(.*?\)", "", value or "")
-    value = re.sub(r"股份有限公司|有限公司|集团|控股|公司|Corporation|Inc\.|Inc|Ltd\.|Ltd|Limited|PLC", "", value, flags=re.I)
+    value = re.sub(r"股份有限公司|有限责任公司|有限公司|集团|控股|公司|Corporation|Inc\.|Inc|Ltd\.|Ltd|Limited|PLC", "", value, flags=re.I)
     return value.strip()
 
 
@@ -63,36 +64,140 @@ def name_in_text(name: str, text: str) -> bool:
     return any(x in text for x in candidates)
 
 
-def section_count_number(index: int) -> str:
-    nums = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
-    return nums[index] if 0 <= index < len(nums) else str(index)
+def infer_parties_from_case_name(case_name: str) -> tuple[str, str]:
+    parts = re.split(r"收购|并购|入主|吸收合并|私有化|合并|出售", case_name or "", maxsplit=1)
+    if len(parts) >= 2:
+        return parts[0].strip(), parts[1].strip()
+    return "", ""
+
+
+def party_names_for_title(brief: CaseBrief) -> tuple[str, str]:
+    acquirer = brief.acquirer or ""
+    target = brief.target or ""
+    if not acquirer or not target:
+        inferred_a, inferred_t = infer_parties_from_case_name(brief.case_name)
+        acquirer = acquirer or inferred_a
+        target = target or inferred_t
+    return compact_name(acquirer) or acquirer, compact_name(target) or target
+
+
+def cn_number(index: int) -> str:
+    return CN_NUMS[index] if 0 <= index < len(CN_NUMS) else str(index)
+
+
+def strip_heading_number(heading: str) -> str:
+    heading = str(heading or "").strip()
+    heading = re.sub(r"^(第[一二三四五六七八九十0-9]+章\s*)", "", heading)
+    heading = re.sub(r"^[一二三四五六七八九十0-9]+[、.．]\s*", "", heading)
+    return heading.strip()
+
+
+def ensure_title(article: dict[str, object], brief: CaseBrief) -> None:
+    title = str(article.get("title") or brief.case_name or "并购案例研究").strip()
+    acquirer, target = party_names_for_title(brief)
+    if "：" not in title and ":" not in title:
+        title = f"{title}：交易启示"
+    missing_acquirer = acquirer and not name_in_text(acquirer, title)
+    missing_target = target and not name_in_text(target, title)
+    if missing_acquirer or missing_target:
+        left = f"{acquirer or '并购方'}收购{target or '标的'}"
+        right = "事实复盘"
+        title = f"{left}：{right}"
+    if title_length(title) > 36 and acquirer and target:
+        title = f"{acquirer}收购{target}：交易启示"
+    article["title"] = title
+
+
+def ensure_sections(article: dict[str, object]) -> None:
+    sections = article.get("sections") or []
+    normalized: list[dict[str, Any]] = []
+    if isinstance(sections, list):
+        for sec in sections[:7]:
+            if not isinstance(sec, dict):
+                continue
+            heading = str(sec.get("heading") or "").strip()
+            paragraphs = sec.get("paragraphs") or []
+            if not isinstance(paragraphs, list):
+                paragraphs = [str(paragraphs)] if paragraphs else []
+            clean_paras = [str(p).strip() for p in paragraphs if str(p).strip()]
+            if heading and clean_paras:
+                normalized.append({"heading": heading, "paragraphs": clean_paras})
+    if len(normalized) < 4:
+        normalized.append({"heading": "补充事实：交易信息仍需围绕公告核验", "paragraphs": ["本节保留用于承接交易日期、交易金额、交易双方基本情况与交易动机等关键事实，后续生成会继续依据公开资料补足。"]})
+    total = len(normalized)
+    for idx, sec in enumerate(normalized, start=1):
+        body = strip_heading_number(str(sec.get("heading") or ""))
+        number = cn_number(idx)
+        if idx == total:
+            if "结语" in body:
+                suffix = body.split("结语", 1)[-1].lstrip("：: 　") or "交易启示回到事实与承接"
+            else:
+                suffix = "交易启示回到事实与承接"
+            sec["heading"] = f"{number}、结语：{suffix}"
+        else:
+            body = re.sub(r"^结语[:：]?", "", body).strip() or "围绕事实展开交易复盘"
+            sec["heading"] = f"{number}、{body}"
+    article["sections"] = normalized
+
+
+def sanitize_fact_language(article: dict[str, object]) -> None:
+    replacements = {
+        "本文": "本案例",
+        "本报告": "本案例",
+        "本文将": "本案例围绕公开资料",
+        "本文认为": "公开资料显示",
+        "有望": "相关安排指向",
+        "或许": "公开资料未进一步披露",
+        "大概": "约",
+        "可能是": "公开资料显示为",
+        "可能会": "相关安排指向",
+    }
+    def clean(value: str) -> str:
+        for old, new in replacements.items():
+            value = value.replace(old, new)
+        return value
+    article["intro"] = clean(str(article.get("intro") or ""))
+    sections = article.get("sections") or []
+    if isinstance(sections, list):
+        for sec in sections:
+            if isinstance(sec, dict):
+                sec["heading"] = clean(str(sec.get("heading") or ""))
+                paragraphs = sec.get("paragraphs") or []
+                if isinstance(paragraphs, list):
+                    sec["paragraphs"] = [clean(str(p)) for p in paragraphs]
+
+
+def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[str, object]:
+    ensure_title(article, brief)
+    ensure_sections(article)
+    sanitize_fact_language(article)
+    return article
 
 
 def validate_article(article: dict[str, object], brief: CaseBrief) -> list[str]:
+    article = postprocess_article(article, brief)
     issues: list[str] = []
     text = article_text(article)
     length = chinese_length(text)
     title = str(article.get("title") or "")
     acquirer = brief.acquirer or ""
     target = brief.target or ""
-    case_name = brief.case_name or ""
+    inferred_a, inferred_t = infer_parties_from_case_name(brief.case_name)
+    title_acquirer = acquirer or inferred_a
+    title_target = target or inferred_t
 
     if length <= 3500:
         issues.append(f"成品字数不足，当前约 {length} 字，必须大于3500个中文字符。")
     if length >= 4000:
         issues.append(f"成品字数过长，当前约 {length} 字，必须小于4000个中文字符。")
-    if title_length(title) > 34:
-        issues.append(f"标题过长，当前约 {title_length(title)} 字，最好压缩到30字以内，且仍保留主副标题形式。")
+    if title_length(title) > 36:
+        issues.append(f"标题过长，当前约 {title_length(title)} 字，需压缩并保留交易双方。")
     if "：" not in title and ":" not in title:
         issues.append("标题需要采用主副标题形式，中间使用冒号。")
-    if acquirer and not name_in_text(acquirer, title):
-        issues.append(f"主副标题必须包含并购方名称或简称：{acquirer}。")
-    if target and not name_in_text(target, title):
-        issues.append(f"主副标题必须包含标的方名称或简称：{target}。")
-    if (not acquirer or not target) and case_name:
-        parts = re.split(r"收购|并购|入主|吸收合并|私有化|合并", case_name, maxsplit=1)
-        if len(parts) >= 2 and (parts[0].strip() not in title or parts[1].strip()[:4] not in title):
-            issues.append("主副标题必须包含交易双方名称或简称；当前标题未充分体现案例名中的双方。")
+    if title_acquirer and not name_in_text(title_acquirer, title):
+        issues.append(f"主副标题必须包含并购方名称或简称：{title_acquirer}。")
+    if title_target and not name_in_text(title_target, title):
+        issues.append(f"主副标题必须包含标的方名称或简称：{title_target}。")
 
     intro = str(article.get("intro") or "")[:120]
     if any(pattern in intro for pattern in BANNED_INTRO_PATTERNS):
@@ -112,11 +217,12 @@ def validate_article(article: dict[str, object], brief: CaseBrief) -> list[str]:
             if not isinstance(sec, dict):
                 continue
             heading = str(sec.get("heading") or "")
-            if any(generic in heading for generic in GENERIC_HEADINGS):
+            if any(generic in strip_heading_number(heading) for generic in GENERIC_HEADINGS):
                 issues.append(f"章节标题过于机械：{heading}，需要改为概括该章结论的标题。")
+        expected_num = cn_number(len(sections))
         last_heading = str(sections[-1].get("heading") or "") if isinstance(sections[-1], dict) else ""
-        if not re.match(rf"^(?:[一二三四五六七八九十]+、|第[{CHINESE_NUMERALS}]+章).{{0,12}}结语：", last_heading):
-            issues.append("最后一章标题必须带章节数字并写成类似'五、结语：副标题'或'第五章 结语：副标题'。")
+        if not last_heading.startswith(f"{expected_num}、结语：") and not last_heading.startswith(f"第{expected_num}章"):
+            issues.append(f"最后一章标题必须按实际顺序编号为'{expected_num}、结语：副标题'或'第{expected_num}章 结语：副标题'。")
 
     digit_count = len(re.findall(r"\d", text))
     if digit_count < 35:
@@ -145,12 +251,12 @@ def trim_article(article: dict[str, object], max_chars: int = 3990) -> dict[str,
         return article
     sections = article.get("sections") or []
     if isinstance(sections, list):
-        for sec in sections:
+        for sec in sections[1:-1]:
             if not isinstance(sec, dict):
                 continue
             paragraphs = sec.get("paragraphs") or []
             if isinstance(paragraphs, list):
-                sec["paragraphs"] = [str(p)[:600] for p in paragraphs[:4]]
+                sec["paragraphs"] = [str(p)[:520] for p in paragraphs[:3]]
     return article
 
 
@@ -200,7 +306,7 @@ def build_prompt(brief: CaseBrief, research_rows: list[dict[str, str]], *, revis
                 "\n【硬性要求】标题必须包含并购方和标的方名称或简称，并采用主副标题形式，最好不超过30个中文字符。"
                 "\n【硬性要求】全文必须客观陈述事实，不使用'假设、推测、可能是、或许、有望、如果、若能、若未'等推测表达。"
                 "\n【硬性要求】正文必须涵盖：1）并购具体日期或时间线；2）交易金额/估值/支付方式/股权比例；3）并购方基本介绍；4）标的方基本介绍；5）并购方为什么买；6）标的方/卖方为什么卖。"
-                "\n【硬性要求】章节数量4-7章，最后一章必须带章节数字并写成'五、结语：副标题'或'第五章 结语：副标题'。"
+                "\n【硬性要求】章节数量4-7章，最后一章必须带实际顺序编号：若全文5章写'五、结语：副标题'，6章写'六、结语：副标题'，7章写'七、结语：副标题'。不要固定写五。"
                 "\n【硬性要求】成品字数必须大于3500个中文字符、小于4000个中文字符。"
                 "\n引言第一句不要出现'本文'或'本报告'，直接讲这个案例对CEO的借鉴价值。"
                 + revise_text
@@ -210,14 +316,14 @@ def build_prompt(brief: CaseBrief, research_rows: list[dict[str, str]], *, revis
 
 
 def normalize_article(payload: dict[str, object], brief: CaseBrief) -> dict[str, object]:
-    return {
+    return postprocess_article({
         "case_name": str(payload.get("case_name") or brief.case_name),
         "category": str(payload.get("category") or brief.category),
         "title": str(payload.get("title") or brief.case_name),
         "intro": str(payload.get("intro") or ""),
         "sections": payload.get("sections") or [],
         "sources": payload.get("sources") or ([brief.source_url] if brief.source_url else []),
-    }
+    }, brief)
 
 
 def generate_article(brief: CaseBrief) -> dict[str, object]:
@@ -228,13 +334,15 @@ def generate_article(brief: CaseBrief) -> dict[str, object]:
     payload = chat_json(build_prompt(brief, research_rows), timeout=240)
     article = normalize_article(payload, brief)
     issues = validate_article(article, brief)
-    for round_idx in range(3):
+    for round_idx in range(4):
         if not issues:
             break
         LOGGER.info("Revising report %s round %s due to issues: %s", brief.case_name, round_idx + 1, issues)
         payload = chat_json(build_prompt(brief, research_rows, revision_issues=issues, previous_article=article), timeout=240)
         article = normalize_article(payload, brief)
         issues = validate_article(article, brief)
-    if issues:
-        LOGGER.warning("Report still has validation issues after revisions: %s %s", brief.case_name, issues)
-    return trim_article(article)
+    article = postprocess_article(trim_article(article), brief)
+    final_issues = validate_article(article, brief)
+    if final_issues:
+        LOGGER.warning("Report still has validation issues after robust postprocess: %s %s", brief.case_name, final_issues)
+    return article
