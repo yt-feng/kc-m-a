@@ -47,25 +47,27 @@ def set_spacing_xml(p_pr) -> None:
     spacing.set(qn("w:after"), ZERO)
     spacing.set(qn("w:beforeLines"), ZERO)
     spacing.set(qn("w:afterLines"), ZERO)
+    spacing.set(qn("w:lineRule"), "auto")
 
 
 def set_first_line_chars_xml(p_pr, chars: str = FIRST_LINE_CHARS) -> None:
     ind = get_or_add(p_pr, "w:ind")
     # Remove absolute first-line indent; otherwise Word shows 0.99cm instead of 2 characters.
-    for attr in ("w:firstLine", "w:hanging", "w:hangingChars"):
+    for attr in ("w:firstLine", "w:hanging", "w:hangingChars", "w:start", "w:left"):
         ind.attrib.pop(qn(attr), None)
     ind.set(qn("w:firstLineChars"), chars)
 
 
 def set_no_first_line_xml(p_pr) -> None:
     ind = get_or_add(p_pr, "w:ind")
-    for attr in ("w:firstLine", "w:firstLineChars", "w:hanging", "w:hangingChars"):
+    for attr in ("w:firstLine", "w:firstLineChars", "w:hanging", "w:hangingChars", "w:start", "w:left"):
         ind.attrib.pop(qn(attr), None)
 
 
 def set_paragraph_spacing(paragraph) -> None:
     paragraph.paragraph_format.space_before = Pt(0)
     paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = 1.0
     set_spacing_xml(paragraph._p.get_or_add_pPr())
 
 
@@ -82,6 +84,7 @@ def set_paragraph_no_first_line(paragraph) -> None:
 def set_style_spacing(style) -> None:
     style.paragraph_format.space_before = Pt(0)
     style.paragraph_format.space_after = Pt(0)
+    style.paragraph_format.line_spacing = 1.0
     set_spacing_xml(style_ppr(style))
 
 
@@ -119,7 +122,6 @@ def add_text_with_quote_font(paragraph, text: str, *, east_asia: str = "仿宋",
         if char in QUOTE_CHARS:
             flush()
             run = paragraph.add_run(char)
-            # Quotation marks must render as Times New Roman, including East Asian font mapping.
             set_run_font(run, east_asia="Times New Roman", latin="Times New Roman", size_pt=size_pt, bold=bold)
         else:
             buffer += char
@@ -134,13 +136,16 @@ def set_doc_defaults(doc: Document) -> None:
     section.bottom_margin = Cm(2.54)
     section.left_margin = Cm(3.175)
     section.right_margin = Cm(3.175)
-    normal = doc.styles["Normal"]
-    normal.font.name = "Times New Roman"
-    normal.font.size = Pt(14)
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "仿宋")
-    normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    set_style_spacing(normal)
-    set_style_first_line_chars(normal)
+    for style_name in ("Normal", "Body Text"):
+        if style_name in doc.styles:
+            style = doc.styles[style_name]
+            style.font.name = "Times New Roman"
+            style.font.size = Pt(14)
+            if style._element.rPr is not None:
+                style._element.rPr.rFonts.set(qn("w:eastAsia"), "仿宋")
+            style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            set_style_spacing(style)
+            set_style_first_line_chars(style)
 
 
 def add_title(doc: Document, text: str) -> None:
@@ -153,14 +158,15 @@ def add_title(doc: Document, text: str) -> None:
 
 def add_heading(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     set_paragraph_spacing(p)
-    set_paragraph_no_first_line(p)
+    # User requirement: full document uses first-line indent of 2 characters.
+    set_paragraph_first_line_chars(p)
     add_text_with_quote_font(p, text, east_asia="仿宋", size_pt=14, bold=True)
 
 
 def add_body(doc: Document, text: str, *, bold_prefix: bool = False) -> None:
     p = doc.add_paragraph()
-    p.paragraph_format.line_spacing = 1.0
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     set_paragraph_spacing(p)
     set_paragraph_first_line_chars(p)
@@ -187,6 +193,19 @@ def normalize_sections(article: dict[str, object]) -> list[tuple[str, list[str]]
     return out
 
 
+def enforce_document_format(doc: Document) -> None:
+    """Apply final paragraph rules to every generated paragraph before save."""
+    for idx, paragraph in enumerate(doc.paragraphs):
+        set_paragraph_spacing(paragraph)
+        if idx == 0 and paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+            set_paragraph_no_first_line(paragraph)
+        else:
+            set_paragraph_first_line_chars(paragraph)
+        for run in paragraph.runs:
+            if run.text in QUOTE_CHARS:
+                set_run_font(run, east_asia="Times New Roman", latin="Times New Roman", size_pt=run.font.size.pt if run.font.size else 14)
+
+
 def write_docx(article: dict[str, object], *, category: str, output_root: Path) -> Path:
     doc = Document()
     set_doc_defaults(doc)
@@ -202,6 +221,7 @@ def write_docx(article: dict[str, object], *, category: str, output_root: Path) 
         for para in paragraphs:
             add_body(doc, para, bold_prefix=para.startswith(("其一", "其二", "其三", "第一", "第二", "第三")))
 
+    enforce_document_format(doc)
     folder = CATEGORY_FOLDER_NAMES.get(category, sanitize_filename(category))
     output_dir = output_root / folder
     output_dir.mkdir(parents=True, exist_ok=True)
