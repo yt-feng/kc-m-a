@@ -1,0 +1,15 @@
+{
+  "mode": "backfill",
+  "run_label": "backfill_20260524_182104",
+  "requested_count": 5,
+  "selected_count": 5,
+  "count": 5,
+  "files": [
+    "case_reports/02_上市平台持续整合/backfill_20260524_182104_腾讯音乐娱乐收购喜马拉雅：事实复盘.docx",
+    "case_reports/02_上市平台持续整合/backfill_20260524_182104_美丽田园医疗健康收购思妍丽：事实复盘.docx",
+    "case_reports/02_上市平台持续整合/backfill_20260524_182104_中国神华收购多家能源资产：事实复盘.docx",
+    "case_reports/01_整合一级资产_资本化/backfill_20260524_182104_AMD收购ZTSystems并剥离制造业务：事实复盘.docx",
+    "case_reports/01_整合一级资产_资本化/backfill_20260524_182104_Intel收购Altera权给银湖资本：事实复盘.docx"
+  ],
+  "failures": []
+}
