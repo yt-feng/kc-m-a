@@ -11,7 +11,7 @@ on:
         required: false
         default: "weekly"
       count:
-        description: "Number of reports to generate"
+        description: "Number of reports to generate. For backfill, use 5-10 per run."
         required: false
         default: "4"
       min_domestic:
@@ -22,6 +22,10 @@ on:
         description: "Weekly lookback days"
         required: false
         default: "7"
+      offset:
+        description: "Skip N selected cases for batched backfill"
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -33,7 +37,7 @@ concurrency:
 jobs:
   generate_reports:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -42,8 +46,10 @@ jobs:
       REPORT_COUNT: ${{ github.event.inputs.count || '4' }}
       REPORT_MIN_DOMESTIC: ${{ github.event.inputs.min_domestic || '2' }}
       REPORT_LOOKBACK_DAYS: ${{ github.event.inputs.days || '7' }}
+      REPORT_OFFSET: ${{ github.event.inputs.offset || '0' }}
       REPORT_OUTPUT_ROOT: case_reports
       REPORT_MAX_RAW_ITEMS: "450"
+      REPORT_CONTINUE_ON_ERROR: "1"
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout repository
@@ -61,9 +67,30 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Generate M&A case reports
-        run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --days "$REPORT_LOOKBACK_DAYS" --output-root "$REPORT_OUTPUT_ROOT"
+        run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --days "$REPORT_LOOKBACK_DAYS" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
+
+      - name: Show generated files
+        if: always()
+        shell: bash
+        run: |
+          echo "Generated report files:"
+          find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | sort | tail -120 || true
+          echo "Git status:"
+          git status --short || true
+
+      - name: Upload generated report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-case-reports-${{ github.run_id }}
+          path: |
+            case_reports/**/*.docx
+            case_reports/_manifests/*.json
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Commit generated reports
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
