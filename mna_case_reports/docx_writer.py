@@ -42,7 +42,6 @@ def style_ppr(style):
 
 def set_spacing_xml(p_pr) -> None:
     spacing = get_or_add(p_pr, "w:spacing")
-    # Force Word to display both 段前 and 段后 as 0 行 / 0 磅.
     spacing.set(qn("w:before"), ZERO)
     spacing.set(qn("w:after"), ZERO)
     spacing.set(qn("w:beforeLines"), ZERO)
@@ -52,7 +51,6 @@ def set_spacing_xml(p_pr) -> None:
 
 def set_first_line_chars_xml(p_pr, chars: str = FIRST_LINE_CHARS) -> None:
     ind = get_or_add(p_pr, "w:ind")
-    # Remove absolute first-line indent; otherwise Word shows 0.99cm instead of 2 characters.
     for attr in ("w:firstLine", "w:hanging", "w:hangingChars", "w:start", "w:left"):
         ind.attrib.pop(qn(attr), None)
     ind.set(qn("w:firstLineChars"), chars)
@@ -160,7 +158,6 @@ def add_heading(doc: Document, text: str) -> None:
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     set_paragraph_spacing(p)
-    # User requirement: full document uses first-line indent of 2 characters.
     set_paragraph_first_line_chars(p)
     add_text_with_quote_font(p, text, east_asia="仿宋", size_pt=14, bold=True)
 
@@ -194,7 +191,6 @@ def normalize_sections(article: dict[str, object]) -> list[tuple[str, list[str]]
 
 
 def enforce_document_format(doc: Document) -> None:
-    """Apply final paragraph rules to every generated paragraph before save."""
     for idx, paragraph in enumerate(doc.paragraphs):
         set_paragraph_spacing(paragraph)
         if idx == 0 and paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
@@ -206,7 +202,7 @@ def enforce_document_format(doc: Document) -> None:
                 set_run_font(run, east_asia="Times New Roman", latin="Times New Roman", size_pt=run.font.size.pt if run.font.size else 14)
 
 
-def write_docx(article: dict[str, object], *, category: str, output_root: Path) -> Path:
+def write_docx(article: dict[str, object], *, category: str, output_root: Path, run_label: str = "") -> Path:
     doc = Document()
     set_doc_defaults(doc)
     title = str(article.get("title") or article.get("case_name") or "并购案例研究")
@@ -225,7 +221,8 @@ def write_docx(article: dict[str, object], *, category: str, output_root: Path) 
     folder = CATEGORY_FOLDER_NAMES.get(category, sanitize_filename(category))
     output_dir = output_root / folder
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = sanitize_filename(title) + ".docx"
+    prefix = f"{sanitize_filename(run_label, 32)}_" if run_label else ""
+    filename = prefix + sanitize_filename(title) + ".docx"
     path = output_dir / filename
     doc.save(path)
     return path
