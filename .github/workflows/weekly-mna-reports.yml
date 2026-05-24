@@ -74,7 +74,11 @@ jobs:
         shell: bash
         run: |
           echo "Generated report files:"
-          find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | sort | tail -120 || true
+          if [ -d case_reports ]; then
+            find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | sort | tail -120 || true
+          else
+            echo "case_reports directory does not exist."
+          fi
           echo "Git status:"
           git status --short || true
 
@@ -97,7 +101,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if ! find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) | grep -q .; then
+          if [ ! -d case_reports ]; then
+            echo "No case_reports directory generated."
+            exit 0
+          fi
+
+          report_count="$(find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | wc -l | tr -d ' ')"
+          echo "Report files available before commit: $report_count"
+          if [ "$report_count" = "0" ]; then
             echo "No report files generated."
             exit 0
           fi
