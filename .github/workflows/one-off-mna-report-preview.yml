@@ -1,0 +1,147 @@
+name: One-off M&A report preview
+
+on:
+  push:
+    paths:
+      - ".github/workflows/one-off-mna-report-preview.yml"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "weekly or backfill"
+        required: false
+        default: "backfill"
+      count:
+        description: "Number of reports to generate"
+        required: false
+        default: "1"
+      min_domestic:
+        description: "Minimum domestic China-related reports"
+        required: false
+        default: "1"
+      offset:
+        description: "Skip N selected cases for preview"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-off-mna-report-preview-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generate_one_report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TZ: Asia/Shanghai
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_MODEL: deepseek-v4-flash
+      REPORT_MODE: ${{ github.event.inputs.mode || 'backfill' }}
+      REPORT_COUNT: ${{ github.event.inputs.count || '1' }}
+      REPORT_MIN_DOMESTIC: ${{ github.event.inputs.min_domestic || '1' }}
+      REPORT_OFFSET: ${{ github.event.inputs.offset || '0' }}
+      REPORT_OUTPUT_ROOT: case_reports_preview
+      REPORT_MAX_RAW_ITEMS: "160"
+      REPORT_CONTINUE_ON_ERROR: "1"
+      REPORT_MAX_REVISIONS: "2"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate one preview report
+        run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
+
+      - name: Validate preview DOCX format
+        if: always()
+        shell: bash
+        run: |
+          if [ -d "$REPORT_OUTPUT_ROOT" ]; then
+            mkdir -p "$REPORT_OUTPUT_ROOT/_manifests"
+            python -m mna_case_reports.docx_validate "$REPORT_OUTPUT_ROOT" --write-json "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json" --warn-only
+          else
+            echo "$REPORT_OUTPUT_ROOT directory does not exist; skip DOCX validation."
+          fi
+
+      - name: Show preview files
+        if: always()
+        shell: bash
+        run: |
+          if [ -d "$REPORT_OUTPUT_ROOT" ]; then
+            find "$REPORT_OUTPUT_ROOT" -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | sort
+          else
+            echo "No preview output directory."
+          fi
+          git status --short || true
+
+      - name: Upload preview artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: one-off-mna-report-preview-${{ github.run_id }}
+          path: |
+            case_reports_preview/**/*.docx
+            case_reports_preview/_manifests/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit preview report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ ! -d "$REPORT_OUTPUT_ROOT" ]; then
+            echo "No preview reports generated."
+            exit 0
+          fi
+
+          report_count="$(find "$REPORT_OUTPUT_ROOT" -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | wc -l | tr -d ' ')"
+          echo "Preview files available before commit: $report_count"
+          if [ "$report_count" = "0" ]; then
+            echo "No preview files generated."
+            exit 0
+          fi
+
+          tmp_dir="$(mktemp -d)"
+          mkdir -p "$tmp_dir/$REPORT_OUTPUT_ROOT"
+          cp -a "$REPORT_OUTPUT_ROOT/." "$tmp_dir/$REPORT_OUTPUT_ROOT/"
+          commit_msg="chore: add one-off M&A report preview $(date +'%Y-%m-%d')"
+
+          for attempt in 1 2 3; do
+            echo "Commit attempt $attempt"
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p "$REPORT_OUTPUT_ROOT"
+            cp -a "$tmp_dir/$REPORT_OUTPUT_ROOT/." "$REPORT_OUTPUT_ROOT/"
+            git add "$REPORT_OUTPUT_ROOT"
+            if git diff --cached --quiet; then
+              echo "No preview report changes to commit."
+              exit 0
+            fi
+            git commit -m "$commit_msg"
+            if git push origin HEAD:main; then
+              echo "Pushed preview report."
+              exit 0
+            fi
+            echo "Push rejected, retrying after refreshing origin/main."
+            sleep 5
+          done
+
+          echo "Failed to push preview report after retries."
+          exit 1
