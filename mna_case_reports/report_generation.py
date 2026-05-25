@@ -3,9 +3,10 @@
 Pipeline:
 1. collect research rows
 2. build a fact pack
-3. generate a neutral outline
+3. generate a material-driven outline
 4. generate article body from fact pack + outline
-5. validate, targeted rewrite, length expansion
+5. validate hard requirements and quality requirements
+6. targeted rewrite, length expansion, final postprocess
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import logging
 import os
 
+from .article_quality import assess_quality
 from .article_rules import (
     MAX_CHARS,
     MIN_CHARS,
@@ -43,11 +45,18 @@ def build_prompt(
     revision_issues: list[str] | None = None,
     previous_article: dict[str, object] | None = None,
     expansion_only: bool = False,
+    quality_rewrite: bool = False,
 ) -> list[dict[str, str]]:
     revise_text = ""
     if revision_issues and previous_article:
+        instruction = "需要基于上一版定向修复以下问题，不要引入资料外事实："
+        if quality_rewrite:
+            instruction = (
+                "需要基于上一版做质量重写：保留已核验事实、金额、日期和交易主体，但重新组织叙述重心，减少模板感，增强产业判断、交易结构分析、财务影响和并购方法论意义。"
+                "不要机械补段落，不要用'从公开资料看/从收购方角度看/数据层面'反复开头。需要让段落之间有事实推进和分析递进。需修复以下问题："
+            )
         revise_text = (
-            "\n需要基于上一版定向修复以下问题，不要引入资料外事实："
+            "\n" + instruction
             + json.dumps(revision_issues, ensure_ascii=False)
             + "\n上一版："
             + json.dumps(previous_article, ensure_ascii=False)
@@ -57,6 +66,7 @@ def build_prompt(
             "\n下面是上一版文章。请只做事实性扩写和轻微润色，不改变事实、标题、章节顺序和交易主体；优先扩展到3600-3900个中文字符。"
             "如为保证逻辑完整可略高于4000字，但不要明显冗长。正文不得出现读者对象，不要写'上市公司CEO/董事长/读者'等提示语。"
             "章节标题要客观中性，不使用口号化、负面化或广告化表述。章节标题不要出现'交易动机、交易背景、交易结构设计、并购战略考量、标的筛选、并购后整合、价值释放'这些过程词。"
+            "扩写重点不是凑字，而是补充事实之间的逻辑：产业位置、交易结构、财务影响、交割承接和方法论意义。"
             + "\n上一版："
             + json.dumps(previous_article, ensure_ascii=False)
         )
@@ -76,11 +86,14 @@ def build_prompt(
                 "请基于事实包和指定大纲写一篇并购案例分析报告。报告不是新闻摘要，要从公开事实出发，复盘交易时间、金额、双方业务、购买理由、出售或接受安排原因、条款安排和交割后承接。"
                 "不要过度结构化、模式化；结构必须服务于材料本身，文档质量优先于格式统一。"
                 "除拆解案例本身外，还要加入有依据的产业判断、交易结构分析和并购方法论意义，但所有判断都要回到公开资料和事实包。"
+                "文章应像一篇有主线的案例研究：引言提出本案例最值得复盘的问题；正文围绕事实推进分析；结语提炼同类交易可参考的方法。"
+                "避免每章都用同样段落数量，避免每段都用同样句式开头，避免把'事实—分析—启示'机械重复。"
                 f"\n案例：{brief.case_name}"
                 f"\n分类：{brief.category}"
                 f"\n地区：{brief.region}"
                 f"\n事实包：{json.dumps(fact_pack.to_dict(), ensure_ascii=False)}"
                 f"\n指定大纲：{json.dumps(outline, ensure_ascii=False)}"
+                f"\n建议深入分析角度：{json.dumps(fact_pack.analysis_angles, ensure_ascii=False)}"
                 f"\n分类口径：{CATEGORY_GUIDE}"
                 f"\n选题规则：{TOPIC_SELECTION_RULES}"
                 f"\n写作规则：{STYLE_RULES}"
@@ -97,7 +110,8 @@ def build_prompt(
                 "\n【硬性要求】全文使用一致的全角中文标点符号；不要在中文字符和英文单词或数字之间添加空格；金额、数量等类型的长数字应添加千字符分隔符。"
                 "\n【硬性要求】章节标题客观、中性、克制，用一句话概括事实和关注点；不要口号化，不要负面化，不要广告化。不要把'交易动机、交易背景、交易结构设计、并购战略考量、标的筛选、并购后整合、价值释放'等分析提纲直接写进标题。"
                 "\n【硬性要求】全文字数控制在3500-4000字；如果为了保证逻辑完整，可以适当超过，但不要为了凑字重复。"
-                "\n【行文要求】每篇可以有不同侧重，可围绕产业位置、资产质量、价格与支付方式、条款安排、交割后承接、业务协同、财务影响等角度组织，不需要每篇固定结构。"
+                "\n【深度要求】正文至少覆盖三个层面：产业判断、交易结构、财务影响、交割承接、并购方法论意义。不能只复述新闻或公告。"
+                "\n【行文要求】每篇可以有不同侧重，可围绕产业位置、资产质量、价格与支付方式、条款安排、交割承接、业务协同、财务影响等角度组织，不需要每篇固定结构。"
                 "\n引言第一句不要出现'本文'或'本报告'，直接讲这个案例可复盘的关键事实和关注点。"
                 + revise_text
             ),
@@ -159,23 +173,39 @@ def generate_article(brief: CaseBrief) -> dict[str, object]:
     payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, outline=outline), timeout=240)
     article = normalize_article(payload, brief, outline)
     issues = validate_article(article, brief)
+    quality_issues = assess_quality(article)
     max_revisions = int(os.getenv("REPORT_MAX_REVISIONS", "2"))
     for round_idx in range(max_revisions):
-        if not issues:
+        combined_issues = issues + quality_issues
+        if not combined_issues:
             break
-        non_length_issues = [x for x in issues if "成品字数" not in x]
+        non_length_issues = [x for x in combined_issues if "成品字数" not in x]
         if not non_length_issues and chinese_length(article_text(article)) < MIN_CHARS:
             break
-        LOGGER.info("Revising report %s round %s due to issues: %s", brief.case_name, round_idx + 1, non_length_issues or issues)
-        payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, outline=outline, revision_issues=non_length_issues or issues, previous_article=article), timeout=240)
+        is_quality_rewrite = bool(quality_issues) and not issues
+        LOGGER.info("Revising report %s round %s due to issues: %s", brief.case_name, round_idx + 1, non_length_issues or combined_issues)
+        payload = chat_json(
+            build_prompt(
+                brief,
+                research_rows,
+                fact_pack=fact_pack,
+                outline=outline,
+                revision_issues=non_length_issues or combined_issues,
+                previous_article=article,
+                quality_rewrite=is_quality_rewrite,
+            ),
+            timeout=240,
+        )
         article = normalize_article(payload, brief, outline)
         issues = validate_article(article, brief)
+        quality_issues = assess_quality(article)
 
     article = expand_to_target_length(article, brief, research_rows, fact_pack, outline)
     article = postprocess_article(article, brief)
     final_issues = validate_article(article, brief)
-    if final_issues:
-        LOGGER.warning("Report still has validation issues after staged pipeline: %s %s", brief.case_name, final_issues)
+    final_quality_issues = assess_quality(article)
+    if final_issues or final_quality_issues:
+        LOGGER.warning("Report still has validation/quality issues after staged pipeline: %s hard=%s quality=%s", brief.case_name, final_issues, final_quality_issues)
     else:
-        LOGGER.info("Report passed hard validation: %s length=%s", brief.case_name, chinese_length(article_text(article)))
+        LOGGER.info("Report passed hard validation and quality checks: %s length=%s", brief.case_name, chinese_length(article_text(article)))
     return article
