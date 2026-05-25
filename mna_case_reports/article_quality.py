@@ -10,7 +10,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from .article_rules import article_text, strip_heading_number
+from .article_rules_extra import article_text, strip_heading_number
 
 TEMPLATE_HEADINGS = (
     "关键事实与交易进程",
@@ -31,6 +31,20 @@ TEMPLATE_PHRASES = (
     "相关安排的后续观察重点",
     "只能回到公开资料",
 )
+
+GENERIC_CONCLUSION_PHRASES = (
+    "并购不是终点",
+    "整合才是开始",
+    "协同不是口号",
+    "时间会给出答案",
+    "值得长期关注",
+    "只有真正整合才能释放价值",
+    "对企业具有重要启示",
+)
+
+MEDIA_MARKERS = ("据媒体报道", "据报道", "媒体报道称", "市场认为", "市场传闻", "有媒体称")
+UNCERTAIN_SOURCE_TERMS = ("媒体报道", "市场传闻", "市场消息", "知情人士", "外媒", "报道称")
+INFERENCE_MARKERS = ("据此推断", "合理推断", "这一判断基于", "推理依据", "从披露信息可以看出")
 
 INDUSTRY_TERMS = (
     "行业", "产业", "产业链", "竞争格局", "市场格局", "供需", "周期", "渗透率", "客户结构",
@@ -66,6 +80,18 @@ def _paragraphs(article: dict[str, object]) -> list[str]:
         if isinstance(paragraphs, list):
             paras.extend(str(p) for p in paragraphs if str(p).strip())
     return paras
+
+
+def _last_section_text(article: dict[str, object]) -> str:
+    sections = _sections(article)
+    if not sections:
+        return ""
+    last = sections[-1]
+    parts = [str(last.get("heading") or "")]
+    paragraphs = last.get("paragraphs") or []
+    if isinstance(paragraphs, list):
+        parts.extend(str(p) for p in paragraphs)
+    return "\n".join(parts)
 
 
 def _count_terms(text: str, terms: tuple[str, ...]) -> int:
@@ -133,5 +159,16 @@ def assess_quality(article: dict[str, object]) -> list[str]:
 
     if not any(term in text for term in ("产业链", "行业", "竞争格局", "客户结构", "技术路线", "商业模式", "资源禀赋")):
         issues.append("缺少产业层面的判断，需要结合标的所处行业、客户/产品/资源位置或竞争格局解释交易意义。")
+
+    last_text = _last_section_text(article)
+    if any(phrase in last_text for phrase in GENERIC_CONCLUSION_PHRASES):
+        issues.append("结语出现泛泛表达，需要紧扣本案例的交易双方、对价结构、业务承接和披露事实，而不是通用口号。")
+    if last_text and _count_terms(last_text, STRUCTURE_TERMS + METHODOLOGY_TERMS + FINANCIAL_TERMS) < 4:
+        issues.append("结语/启示深度不足，需要回到本案例的交易结构、财务数据、交割承接或方法论意义。")
+
+    if any(term in text for term in UNCERTAIN_SOURCE_TERMS) and not any(marker in text for marker in MEDIA_MARKERS):
+        issues.append("涉及媒体报道、市场传闻或消息来源时，必须明确写成'据媒体报道'或'市场认为'，不得当作确定事实。")
+    if "推断" in text and not any(marker in text for marker in INFERENCE_MARKERS):
+        issues.append("合理推断必须说明推理依据，不能包装成确定事实。")
 
     return issues
