@@ -1,0 +1,11 @@
+{
+  "mode": "backfill",
+  "run_label": "backfill_20260525_161236",
+  "requested_count": 1,
+  "selected_count": 1,
+  "count": 1,
+  "files": [
+    "case_reports_preview/01_整合一级资产_资本化/backfill_20260525_161236_美丽田园医疗健康收购思妍丽：交易复盘.docx"
+  ],
+  "failures": []
+}
