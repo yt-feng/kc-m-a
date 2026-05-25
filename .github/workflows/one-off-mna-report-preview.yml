@@ -1,4 +1,5 @@
 name: One-off M&A report preview
+# preview trigger: 2026-05-25T00:00:00+08:00
 
 on:
   push:
