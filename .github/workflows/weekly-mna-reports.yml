@@ -69,6 +69,17 @@ jobs:
       - name: Generate M&A case reports
         run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --days "$REPORT_LOOKBACK_DAYS" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
 
+      - name: Validate DOCX format
+        if: always()
+        shell: bash
+        run: |
+          if [ -d case_reports ]; then
+            mkdir -p case_reports/_manifests
+            python -m mna_case_reports.docx_validate case_reports --write-json "case_reports/_manifests/docx_format_validation_${{ github.run_id }}.json" --warn-only
+          else
+            echo "case_reports directory does not exist; skip DOCX validation."
+          fi
+
       - name: Show generated files
         if: always()
         shell: bash
