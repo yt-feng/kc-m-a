@@ -17,7 +17,6 @@ import os
 from .article_rules import (
     MAX_CHARS,
     MIN_CHARS,
-    TARGET_MIN_CHARS,
     append_until_min_length,
     article_text,
     chinese_length,
@@ -31,7 +30,6 @@ from .deepseek_client import chat_json
 from .fact_pack import FactPack, build_fact_pack
 from .outline_generation import generate_outline, outline_to_sections
 from .research import collect_research_context
-from .text_normalization import normalize_article_text_fields
 
 LOGGER = logging.getLogger(__name__)
 
@@ -95,7 +93,7 @@ def build_prompt(
                 "\n【硬性要求】标题必须准确概括文章主旨，突出核心交易逻辑或分析重点，兼顾专业性与吸引力；避免过于平淡、空泛或标题党式表达；标题必须包含并购方和标的方名称或简称。"
                 "\n【硬性要求】全文必须客观陈述事实，不使用'假设、推测、可能是、或许、有望、如果、若能、若未'等推测表达；事实、数字、信息必须基于公开权威资料，严禁编造。"
                 "\n【硬性要求】正文必须涵盖：1）并购具体日期或时间线；2）交易金额/估值/支付方式/股权比例；3）并购方基本介绍；4）标的方基本介绍；5）并购方为什么买；6）标的方/出售方为什么卖或为什么接受整合。"
-                "\n【硬性要求】公司名称首次出现时，应使用括号标注其全称、下文简称和股票代码（如上市），例如：某某股份有限公司（下称'某某'，股票代码：000000）。"
+                "\n【硬性要求】公司名称首次出现时，应使用括号标注其全称、下文简称和股票代码（如上市），例如：某某股份有限公司（下称“某某”，股票代码：000000）。"
                 "\n【硬性要求】全文使用一致的全角中文标点符号；不要在中文字符和英文单词或数字之间添加空格；金额、数量等类型的长数字应添加千字符分隔符。"
                 "\n【硬性要求】章节标题客观、中性、克制，用一句话概括事实和关注点；不要口号化，不要负面化，不要广告化。不要把'交易动机、交易背景、交易结构设计、并购战略考量、标的筛选、并购后整合、价值释放'等分析提纲直接写进标题。"
                 "\n【硬性要求】全文字数控制在3500-4000字；如果为了保证逻辑完整，可以适当超过，但不要为了凑字重复。"
@@ -124,11 +122,11 @@ def normalize_article(payload: dict[str, object], brief: CaseBrief, outline: lis
                 paragraphs = original_sections[idx].get("paragraphs") or []
                 section["paragraphs"] = paragraphs if isinstance(paragraphs, list) else [str(paragraphs)]
     article["sections"] = forced_sections
-    return normalize_article_text_fields(postprocess_article(article, brief))
+    return postprocess_article(article, brief)
 
 
 def expand_to_target_length(article: dict[str, object], brief: CaseBrief, research_rows: list[dict[str, str]], fact_pack: FactPack, outline: list[str]) -> dict[str, object]:
-    article = normalize_article_text_fields(postprocess_article(article, brief))
+    article = postprocess_article(article, brief)
     for attempt in range(2):
         length = chinese_length(article_text(article))
         if MIN_CHARS <= length <= MAX_CHARS:
@@ -140,11 +138,11 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
         elif length > MAX_CHARS:
             article = trim_article(article)
             if chinese_length(article_text(article)) <= MAX_CHARS:
-                return normalize_article_text_fields(article)
+                return article
     article = append_until_min_length(article, brief, research_rows)
     if chinese_length(article_text(article)) > MAX_CHARS:
         article = trim_article(article)
-    return normalize_article_text_fields(postprocess_article(article, brief))
+    return postprocess_article(article, brief)
 
 
 def generate_article(brief: CaseBrief) -> dict[str, object]:
@@ -174,7 +172,7 @@ def generate_article(brief: CaseBrief) -> dict[str, object]:
         issues = validate_article(article, brief)
 
     article = expand_to_target_length(article, brief, research_rows, fact_pack, outline)
-    article = normalize_article_text_fields(postprocess_article(article, brief))
+    article = postprocess_article(article, brief)
     final_issues = validate_article(article, brief)
     if final_issues:
         LOGGER.warning("Report still has validation issues after staged pipeline: %s %s", brief.case_name, final_issues)
