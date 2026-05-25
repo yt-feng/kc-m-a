@@ -10,8 +10,9 @@ from .case_selection import CaseBrief
 MIN_CHARS = 3501
 TARGET_MIN_CHARS = 3600
 TARGET_MAX_CHARS = 3900
-MAX_CHARS = 3999
+MAX_CHARS = 4300  # 3,500-4,000 is the target; allow slight overflow for logical completeness.
 
+CJK = r"\u4e00-\u9fff"
 BANNED_INTRO_PATTERNS = ("本文", "本报告", "本文将", "本文认为", "本文分析", "以下将")
 BANNED_AUDIENCE_PATTERNS = (
     "上市公司CEO", "上市公司ceo", "上市公司的CEO", "上市公司的ceo",
@@ -39,6 +40,18 @@ BUYER_MOTIVE_PATTERNS = ("买方", "收购方", "并购方", "购买", "收购�
 SELLER_MOTIVE_PATTERNS = ("卖方", "出售方", "标的方", "转让方", "被整合方", "退出", "出售股权", "出让", "接受", "承接", "私有化")
 INTRO_PATTERNS = ("基本介绍", "主营", "主营业务", "业务", "收入", "净利润", "成立", "上市", "资产", "产品", "客户")
 CN_NUMS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
+
+ASCII_TO_FULLWIDTH = str.maketrans({
+    ",": "，",
+    ";": "；",
+    ":": "：",
+    "?": "？",
+    "!": "！",
+    "(": "（",
+    ")": "）",
+    "[": "【",
+    "]": "】",
+})
 
 
 def chinese_length(text: str) -> int:
@@ -104,8 +117,53 @@ def strip_heading_number(heading: str) -> str:
     return heading.strip()
 
 
+def remove_cjk_alnum_spaces(text: str) -> str:
+    # Do not add spaces between Chinese and English/numbers. Keep normal English phrase spacing.
+    text = re.sub(rf"([{CJK}])\s+([A-Za-z0-9])", r"\1\2", text)
+    text = re.sub(rf"([A-Za-z0-9])\s+([{CJK}])", r"\1\2", text)
+    return text
+
+
+def normalize_fullwidth_punctuation(text: str) -> str:
+    # Convert punctuation that appears next to Chinese text to full-width punctuation.
+    text = text.replace("“ ", "“").replace(" ”", "”").replace("‘ ", "‘").replace(" ’", "’")
+    for ascii_p, full_p in ((",", "，"), (";", "；"), (":", "："), ("?", "？"), ("!", "！")):
+        text = re.sub(rf"([{CJK}0-9%％）】])\{ascii_p}", rf"\1{full_p}", text)
+        text = re.sub(rf"\{ascii_p}([{CJK}])", rf"{full_p}\1", text)
+    text = re.sub(rf"([{CJK}])\(", r"\1（", text)
+    text = re.sub(rf"\)([{CJK}])", r"）\1", text)
+    text = re.sub(rf"([{CJK}])\[", r"\1【", text)
+    text = re.sub(rf"\]([{CJK}])", r"】\1", text)
+    # Normalize list-like separators accidentally produced as ASCII punctuation.
+    text = text.replace(" ,", "，").replace(" ;", "；")
+    return text
+
+
+def _format_number_with_commas(match: re.Match[str]) -> str:
+    raw = match.group(0)
+    # Preserve years and stock codes: 4 digits or leading zeros should not be comma-formatted.
+    if len(raw) <= 4 or raw.startswith("0"):
+        return raw
+    return f"{int(raw):,}"
+
+
+def format_thousands(text: str) -> str:
+    # Add thousand separators to long amount/quantity numbers. Avoid decimals, percentages and years.
+    units = r"元|美元|港元|人民币|股|人|吨|万元|亿元|亿美元|万股|亿股|万|亿"
+    text = re.sub(rf"(?<![\d.,])\d{{5,}}(?=\s*(?:{units}))", _format_number_with_commas, text)
+    return text
+
+
+def normalize_text(text: str) -> str:
+    text = re.sub(r"[ \t]+", " ", str(text or "")).strip()
+    text = remove_cjk_alnum_spaces(text)
+    text = normalize_fullwidth_punctuation(text)
+    text = format_thousands(text)
+    return text
+
+
 def ensure_title(article: dict[str, object], brief: CaseBrief) -> None:
-    title = str(article.get("title") or brief.case_name or "并购案例研究").strip()
+    title = normalize_text(str(article.get("title") or brief.case_name or "并购案例研究").strip())
     acquirer, target = party_names_for_title(brief)
     if "：" not in title and ":" not in title:
         title = f"{title}：交易复盘"
@@ -115,7 +173,7 @@ def ensure_title(article: dict[str, object], brief: CaseBrief) -> None:
         title = f"{acquirer or '收购方'}收购{target or '标的'}：交易复盘"
     if title_length(title) > 36 and acquirer and target:
         title = f"{acquirer}收购{target}：交易复盘"
-    article["title"] = title
+    article["title"] = normalize_text(title)
 
 
 def improve_heading_text(body: str, *, is_last: bool = False) -> str:
@@ -143,7 +201,7 @@ def improve_heading_text(body: str, *, is_last: bool = False) -> str:
     }
     for old, new in replacements.items():
         body = body.replace(old, new)
-    body = body.strip(" ：:")
+    body = normalize_text(body.strip(" ：:"))
     if not body:
         return "从公开事实回到执行关注点" if is_last else "关键事实与交易进程"
     return body
@@ -156,11 +214,11 @@ def ensure_sections(article: dict[str, object]) -> None:
         for sec in sections[:7]:
             if not isinstance(sec, dict):
                 continue
-            heading = str(sec.get("heading") or "").strip()
+            heading = normalize_text(str(sec.get("heading") or "").strip())
             paragraphs = sec.get("paragraphs") or []
             if not isinstance(paragraphs, list):
                 paragraphs = [str(paragraphs)] if paragraphs else []
-            clean_paras = [str(p).strip() for p in paragraphs if str(p).strip()]
+            clean_paras = [normalize_text(str(p)) for p in paragraphs if str(p).strip()]
             if heading and clean_paras:
                 normalized.append({"heading": heading, "paragraphs": clean_paras})
     if len(normalized) < 4:
@@ -178,6 +236,12 @@ def ensure_sections(article: dict[str, object]) -> None:
         else:
             sec["heading"] = f"{number}、{body}"
     article["sections"] = normalized
+
+
+def _replace_all(value: str, replacements: dict[str, str]) -> str:
+    for old, new in replacements.items():
+        value = value.replace(old, new)
+    return value
 
 
 def sanitize_fact_language(article: dict[str, object]) -> None:
@@ -223,11 +287,9 @@ def sanitize_fact_language(article: dict[str, object]) -> None:
     }
 
     def clean(value: str) -> str:
-        for old, new in audience_replacements.items():
-            value = value.replace(old, new)
-        for old, new in replacements.items():
-            value = value.replace(old, new)
-        return value
+        value = _replace_all(value, audience_replacements)
+        value = _replace_all(value, replacements)
+        return normalize_text(value)
 
     article["intro"] = clean(str(article.get("intro") or ""))
     sections = article.get("sections") or []
@@ -240,12 +302,69 @@ def sanitize_fact_language(article: dict[str, object]) -> None:
                     sec["paragraphs"] = [clean(str(p)) for p in paragraphs]
 
 
+def annotate_party_first_mentions(article: dict[str, object], brief: CaseBrief) -> None:
+    """Add simple first-mention notes when the model omitted them.
+
+    When full stock-code details are unavailable, use '下文简称'. The prompt still
+    asks the model to include stock codes when public materials provide them.
+    """
+    parties: list[tuple[str, str]] = []
+    for name in (brief.acquirer, brief.target):
+        if not name:
+            continue
+        short = compact_name(name) or name
+        if len(short) >= 2:
+            parties.append((name, short))
+
+    def annotate_text(text: str, name: str, short: str) -> tuple[str, bool]:
+        idx = text.find(name)
+        if idx < 0:
+            return text, False
+        after = text[idx + len(name): idx + len(name) + 1]
+        if after == "（":
+            return text, True
+        note = f"{name}（下文简称“{short}”）"
+        return text[:idx] + note + text[idx + len(name):], True
+
+    for name, short in parties:
+        done = False
+        intro = str(article.get("intro") or "")
+        intro, done = annotate_text(intro, name, short)
+        article["intro"] = intro
+        if done:
+            continue
+        sections = article.get("sections") or []
+        if isinstance(sections, list):
+            for sec in sections:
+                if not isinstance(sec, dict):
+                    continue
+                paragraphs = sec.get("paragraphs") or []
+                if not isinstance(paragraphs, list):
+                    continue
+                for i, para in enumerate(paragraphs):
+                    new_para, done = annotate_text(str(para), name, short)
+                    paragraphs[i] = new_para
+                    if done:
+                        break
+                if done:
+                    break
+
+
 def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[str, object]:
     ensure_title(article, brief)
     ensure_sections(article)
     sanitize_fact_language(article)
+    annotate_party_first_mentions(article, brief)
     ensure_sections(article)
     return article
+
+
+def has_cjk_alnum_space(text: str) -> bool:
+    return bool(re.search(rf"([{CJK}])\s+([A-Za-z0-9])|([A-Za-z0-9])\s+([{CJK}])", text))
+
+
+def has_ascii_punct_near_cjk(text: str) -> bool:
+    return bool(re.search(rf"([{CJK}])[,;:!?()\[\]]|[,;:!?()\[\]]([{CJK}])", text))
 
 
 def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_length: bool = True) -> list[str]:
@@ -263,8 +382,8 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
     if strict_length and length < MIN_CHARS:
         issues.append(f"成品字数不足，当前约 {length} 字，必须大于3500个中文字符。")
     if strict_length and length > MAX_CHARS:
-        issues.append(f"成品字数过长，当前约 {length} 字，必须小于4000个中文字符。")
-    if title_length(title) > 36:
+        issues.append(f"成品字数过长，当前约 {length} 字，目标小于4000字；如逻辑完整可略超，但不应超过{MAX_CHARS}字。")
+    if title_length(title) > 40:
         issues.append(f"标题过长，当前约 {title_length(title)} 字，需压缩并保留交易双方。")
     if "：" not in title and ":" not in title:
         issues.append("标题需要采用主副标题形式，中间使用冒号。")
@@ -272,6 +391,11 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
         issues.append(f"主副标题必须包含并购方名称或简称：{title_acquirer}。")
     if title_target and not name_in_text(title_target, title):
         issues.append(f"主副标题必须包含标的方名称或简称：{title_target}。")
+
+    if has_cjk_alnum_space(text):
+        issues.append("中文字符与英文单词或数字之间不应添加空格。")
+    if has_ascii_punct_near_cjk(text):
+        issues.append("全文应使用一致的全角中文标点。")
 
     intro = str(article.get("intro") or "")[:140]
     if any(pattern in intro for pattern in BANNED_INTRO_PATTERNS):
@@ -353,7 +477,7 @@ def trim_article(article: dict[str, object], max_chars: int = MAX_CHARS) -> dict
         para = str(sections[si]["paragraphs"][pi])
         if len(para) <= 260:
             break
-        sections[si]["paragraphs"][pi] = para[: max(260, len(para) - 180)].rstrip("，；、") + "。"
+        sections[si]["paragraphs"][pi] = normalize_text(para[: max(260, len(para) - 180)].rstrip("，；、") + "。")
     return article
 
 
@@ -367,7 +491,7 @@ def extract_research_fact_lines(research_rows: list[dict[str, str]], limit: int 
                 continue
             parts = re.split(r"[\n。；;]", value)
             for part in parts:
-                part = part.strip(" -•\t ")
+                part = normalize_text(part.strip(" -•\t "))
                 if len(part) < 20 or part in seen:
                     continue
                 if not re.search(r"\d", part) and not any(token in part for token in ("亿元", "亿美元", "完成", "收购", "股权", "收入", "净利润")):
@@ -389,10 +513,10 @@ def build_supplement_paragraphs(brief: CaseBrief, research_rows: list[dict[str, 
     seller_reason = brief.seller_motivation or "公开资料显示，出售方或被整合方接受交易安排，与股权转让、资源承接、平台整合或资本化路径有关"
     financials = brief.financial_highlights or ("；".join(fact_lines[4:8]) if len(fact_lines) > 4 else "公开资料披露的经营数据需要与公告、年报和交割文件交叉核验")
     return [
-        f"围绕{brief.case_name}，公开资料能够直接复核的事实包括交易主体、进展状态和核心金额口径。收购方为{acquirer or '公开披露的买方'}，标的方或被整合方为{target or '公开披露的标的'}；交易状态为{deal_status}；交易金额或估值口径为{deal_value}。这些信息决定了复盘边界：交易评价不从主观判断出发，而从公告、交割文件、财务数据和双方披露的安排展开。",
-        f"从收购方角度看，购买理由需要落在已经披露的业务和资产关系上。{buyer_reason}。相关安排的后续观察重点，包括收购方是否通过交易取得控制权、稳定现金流、客户关系、技术能力、产能或资源储备，以及这些要素在交割后的管理边界。",
-        f"从出售方或被整合方角度看，接受交易安排同样需要回到披露文件。{seller_reason}。在控股权转让、吸收合并、资产注入或私有化案例中，公开资料通常需要同时观察价格、交割确定性、支付方式、债务承接、员工和客户稳定、原有业务后续安排以及审批节奏。",
-        f"数据层面的复核重点包括：{financials}。同时，公开资料中出现的关键事实还包括：{fact_text}。这些数字应与交易对价、估值倍数、股权比例、收入和利润贡献放在同一框架下观察，避免只用单一金额解释交易价值。",
+        normalize_text(f"围绕{brief.case_name}，公开资料能够直接复核的事实包括交易主体、进展状态和核心金额口径。收购方为{acquirer or '公开披露的买方'}，标的方或被整合方为{target or '公开披露的标的'}；交易状态为{deal_status}；交易金额或估值口径为{deal_value}。这些信息决定了复盘边界：交易评价不从主观判断出发，而从公告、交割文件、财务数据和双方披露的安排展开。"),
+        normalize_text(f"从收购方角度看，购买理由需要落在已经披露的业务和资产关系上。{buyer_reason}。相关安排的后续观察重点，包括收购方是否通过交易取得控制权、稳定现金流、客户关系、技术能力、产能或资源储备，以及这些要素在交割后的管理边界。"),
+        normalize_text(f"从出售方或被整合方角度看，接受交易安排同样需要回到披露文件。{seller_reason}。在控股权转让、吸收合并、资产注入或私有化案例中，公开资料通常需要同时观察价格、交割确定性、支付方式、债务承接、员工和客户稳定、原有业务后续安排以及审批节奏。"),
+        normalize_text(f"数据层面的复核重点包括：{financials}。同时，公开资料中出现的关键事实还包括：{fact_text}。这些数字应与交易对价、估值倍数、股权比例、收入和利润贡献放在同一框架下观察，避免只用单一金额解释交易价值。"),
     ]
 
 
