@@ -14,6 +14,7 @@ from docx.shared import Cm, Pt
 from .config import CATEGORY_FOLDER_NAMES
 
 FIRST_LINE_CHARS = "200"  # OOXML uses hundredths of a character. 200 = 2 Chinese characters.
+DOC_GRID_LINE_PITCH = "312"  # 15.6 pt line pitch. Word shows 文档网格: 只指定行网格, 每页44行.
 ZERO = "0"
 QUOTE_CHARS = set('“”‘’"')
 
@@ -38,6 +39,18 @@ def style_ppr(style):
         p_pr = OxmlElement("w:pPr")
         style._element.append(p_pr)
     return p_pr
+
+
+def set_doc_grid(doc: Document) -> None:
+    """Set Word 文档网格 to <w:docGrid w:type="lines" w:linePitch="312"/>."""
+    for section in doc.sections:
+        sect_pr = section._sectPr
+        doc_grid = sect_pr.find(qn("w:docGrid"))
+        if doc_grid is None:
+            doc_grid = OxmlElement("w:docGrid")
+            sect_pr.append(doc_grid)
+        doc_grid.set(qn("w:type"), "lines")
+        doc_grid.set(qn("w:linePitch"), DOC_GRID_LINE_PITCH)
 
 
 def set_spacing_xml(p_pr) -> None:
@@ -127,6 +140,7 @@ def add_text_with_quote_font(paragraph, text: str, *, east_asia: str = "仿宋",
 
 
 def set_doc_defaults(doc: Document) -> None:
+    set_doc_grid(doc)
     section = doc.sections[0]
     section.page_width = Cm(21.0)
     section.page_height = Cm(29.7)
@@ -147,6 +161,7 @@ def set_doc_defaults(doc: Document) -> None:
 
 
 def add_title(doc: Document, text: str) -> None:
+    # 一级标题：黑体、小三、单倍行距、居中、无首行缩进。
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     set_paragraph_spacing(p)
@@ -155,8 +170,9 @@ def add_title(doc: Document, text: str) -> None:
 
 
 def add_heading(doc: Document, text: str) -> None:
+    # 二级标题：仿宋、加粗、四号、单倍行距、左对齐、首行缩进2字符。
     p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     set_paragraph_spacing(p)
     set_paragraph_first_line_chars(p)
     add_text_with_quote_font(p, text, east_asia="仿宋", size_pt=14, bold=True)
@@ -191,6 +207,7 @@ def normalize_sections(article: dict[str, object]) -> list[tuple[str, list[str]]
 
 
 def enforce_document_format(doc: Document) -> None:
+    set_doc_grid(doc)
     for idx, paragraph in enumerate(doc.paragraphs):
         set_paragraph_spacing(paragraph)
         if idx == 0 and paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
