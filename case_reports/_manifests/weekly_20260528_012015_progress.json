@@ -1,0 +1,14 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20260528_012015",
+  "requested_count": 4,
+  "selected_count": 4,
+  "count": 4,
+  "files": [
+    "case_reports/01_整合一级资产_资本化/weekly_20260528_012015_国家电投产融收购国家电投相关电力资产：交易复盘.docx",
+    "case_reports/01_整合一级资产_资本化/weekly_20260528_012015_AMD收购ZTSystems并剥离制造业务：交易复盘.docx",
+    "case_reports/01_整合一级资产_资本化/weekly_20260528_012015_Intel收购Altera权给银湖资本：交易复盘.docx",
+    "case_reports/08_SPAC/weekly_20260528_012015_微牛证券通过SPAC收购上市：交易复盘.docx"
+  ],
+  "failures": []
+}
