@@ -76,7 +76,7 @@ case_reports/
 
 ### 目标
 
-- 每周五北京时间 06:00 自动生成 Word 报告。
+- 每周三北京时间 06:00 自动生成 Word 报告。
 - 默认 weekly：每周 4 篇，至少 2 篇中国/境内/港股/中概股案例。
 - backfill：用于首次回溯；用户曾运行 `mode=backfill, count=40, min_domestic=25`。
 

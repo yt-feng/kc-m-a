@@ -2,8 +2,8 @@ name: Weekly M&A case reports
 
 on:
   schedule:
-    # 06:00 every Friday in Beijing = 22:00 every Thursday UTC.
-    - cron: "0 22 * * 4"
+    # 06:00 every Wednesday in Beijing = 22:00 every Tuesday UTC.
+    - cron: "0 22 * * 2"
   workflow_dispatch:
     inputs:
       mode:
