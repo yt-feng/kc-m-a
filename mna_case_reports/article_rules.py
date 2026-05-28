@@ -10,7 +10,7 @@ from .case_selection import CaseBrief
 MIN_CHARS = 3501
 TARGET_MIN_CHARS = 3600
 TARGET_MAX_CHARS = 3900
-MAX_CHARS = 4300  # 3,500-4,000 is the target; allow slight overflow for logical completeness.
+MAX_CHARS = 4000
 
 CJK = r"\u4e00-\u9fff"
 BANNED_INTRO_PATTERNS = ("本文", "本报告", "本文将", "本文认为", "本文分析", "以下将")
@@ -118,14 +118,12 @@ def strip_heading_number(heading: str) -> str:
 
 
 def remove_cjk_alnum_spaces(text: str) -> str:
-    # Do not add spaces between Chinese and English/numbers. Keep normal English phrase spacing.
     text = re.sub(rf"([{CJK}])\s+([A-Za-z0-9])", r"\1\2", text)
     text = re.sub(rf"([A-Za-z0-9])\s+([{CJK}])", r"\1\2", text)
     return text
 
 
 def normalize_fullwidth_punctuation(text: str) -> str:
-    # Convert punctuation that appears next to Chinese text to full-width punctuation.
     text = text.replace("“ ", "“").replace(" ”", "”").replace("‘ ", "‘").replace(" ’", "’")
     for ascii_p, full_p in ((",", "，"), (";", "；"), (":", "："), ("?", "？"), ("!", "！")):
         text = re.sub(rf"([{CJK}0-9%％）】])\{ascii_p}", rf"\1{full_p}", text)
@@ -134,21 +132,18 @@ def normalize_fullwidth_punctuation(text: str) -> str:
     text = re.sub(rf"\)([{CJK}])", r"）\1", text)
     text = re.sub(rf"([{CJK}])\[", r"\1【", text)
     text = re.sub(rf"\]([{CJK}])", r"】\1", text)
-    # Normalize list-like separators accidentally produced as ASCII punctuation.
     text = text.replace(" ,", "，").replace(" ;", "；")
     return text
 
 
 def _format_number_with_commas(match: re.Match[str]) -> str:
     raw = match.group(0)
-    # Preserve years and stock codes: 4 digits or leading zeros should not be comma-formatted.
     if len(raw) <= 4 or raw.startswith("0"):
         return raw
     return f"{int(raw):,}"
 
 
 def format_thousands(text: str) -> str:
-    # Add thousand separators to long amount/quantity numbers. Avoid decimals, percentages and years.
     units = r"元|美元|港元|人民币|股|人|吨|万元|亿元|亿美元|万股|亿股|万|亿"
     text = re.sub(rf"(?<![\d.,])\d{{5,}}(?=\s*(?:{units}))", _format_number_with_commas, text)
     return text
@@ -303,11 +298,6 @@ def sanitize_fact_language(article: dict[str, object]) -> None:
 
 
 def annotate_party_first_mentions(article: dict[str, object], brief: CaseBrief) -> None:
-    """Add simple first-mention notes when the model omitted them.
-
-    When full stock-code details are unavailable, use '下文简称'. The prompt still
-    asks the model to include stock codes when public materials provide them.
-    """
     parties: list[tuple[str, str]] = []
     for name in (brief.acquirer, brief.target):
         if not name:
@@ -382,7 +372,7 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
     if strict_length and length < MIN_CHARS:
         issues.append(f"成品字数不足，当前约 {length} 字，必须大于3500个中文字符。")
     if strict_length and length > MAX_CHARS:
-        issues.append(f"成品字数过长，当前约 {length} 字，目标小于4000字；如逻辑完整可略超，但不应超过{MAX_CHARS}字。")
+        issues.append(f"成品字数过长，当前约 {length} 字，必须小于4000个中文字符。")
     if title_length(title) > 40:
         issues.append(f"标题过长，当前约 {title_length(title)} 字，需压缩并保留交易双方。")
     if "：" not in title and ":" not in title:
