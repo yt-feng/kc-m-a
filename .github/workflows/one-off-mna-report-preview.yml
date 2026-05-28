@@ -1,5 +1,5 @@
 name: One-off M&A report preview
-# preview trigger: 2026-05-28T10:10:00+08:00
+# preview trigger: 2026-05-28T10:25:00+08:00
 
 on:
   push:
@@ -47,6 +47,7 @@ jobs:
       REPORT_MAX_RAW_ITEMS: "160"
       REPORT_CONTINUE_ON_ERROR: "1"
       REPORT_MAX_REVISIONS: "2"
+      REPORT_EXCLUDE_CASE_TERMS: "腾讯音乐,喜马拉雅,TME,Ximalaya"
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout repository
