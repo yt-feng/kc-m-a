@@ -2,8 +2,8 @@ name: Weekly M&A case reports
 
 on:
   schedule:
-    # 06:00 every Wednesday in Beijing = 22:00 every Tuesday UTC.
-    - cron: "0 22 * * 2"
+    # 06:00 every Monday in Beijing = 22:00 every Sunday UTC.
+    - cron: "0 22 * * 0"
   workflow_dispatch:
     inputs:
       mode:
@@ -69,15 +69,15 @@ jobs:
       - name: Generate M&A case reports
         run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --days "$REPORT_LOOKBACK_DAYS" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
 
-      - name: Validate DOCX format
-        if: always()
+      - name: Validate DOCX format and text
         shell: bash
         run: |
           if [ -d case_reports ]; then
             mkdir -p case_reports/_manifests
-            python -m mna_case_reports.docx_validate case_reports --write-json "case_reports/_manifests/docx_format_validation_${{ github.run_id }}.json" --warn-only
+            python -m mna_case_reports.docx_validate case_reports --write-json "case_reports/_manifests/docx_format_validation_${{ github.run_id }}.json"
           else
             echo "case_reports directory does not exist; skip DOCX validation."
+            exit 1
           fi
 
       - name: Show generated files
@@ -105,7 +105,6 @@ jobs:
           retention-days: 30
 
       - name: Commit generated reports
-        if: always()
         shell: bash
         run: |
           set -euo pipefail
