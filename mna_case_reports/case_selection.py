@@ -195,20 +195,21 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
         return []
     sample = [item.as_dict() for item in raw_items[: min(len(raw_items), 220)]]
     exclude = "、".join(excluded_terms())
+    prompt_parts = [
+        "从候选新闻/公告中筛选适合写成并购案例分析报告的交易。",
+        f"选题规则：{TOPIC_SELECTION_RULES}",
+        "优先中国案例；交易主体、交易事件、完成时间、交易对价和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、未完成或终止交易。",
+    ]
+    if exclude:
+        prompt_parts.append(f"不要选择包含这些主体或关键词的案例：{exclude}。")
+    prompt_parts.extend([
+        f"最多输出 {target_count} 个。分类只能用：{json.dumps(CATEGORIES, ensure_ascii=False)}。",
+        "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false,\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_motivation\":...,\"seller_motivation\":...,\"financial_highlights\":...}]}。",
+        f"候选：{json.dumps(sample, ensure_ascii=False)}",
+    ])
     messages = [
         {"role": "system", "content": "你是并购案例研究选题编辑。只输出 JSON。"},
-        {
-            "role": "user",
-            "content": (
-                "从候选新闻/公告中筛选适合写成并购案例分析报告的交易。"
-                f"选题规则：{TOPIC_SELECTION_RULES}"
-                "优先中国案例；交易主体、交易事件、完成时间、交易对价和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、未完成或终止交易。"
-                + (f"不要选择包含这些主体或关键词的案例：{exclude}。" if exclude else "")
-                f"最多输出 {target_count} 个。分类只能用：{json.dumps(CATEGORIES, ensure_ascii=False)}。"
-                "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false,\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_motivation\":...,\"seller_motivation\":...,\"financial_highlights\":...}]}。"
-                f"候选：{json.dumps(sample, ensure_ascii=False)}"
-            ),
-        },
+        {"role": "user", "content": "".join(prompt_parts)},
     ]
     payload = chat_json(messages)
     rows: list[dict[str, str]] = []
@@ -286,7 +287,7 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
                 non_domestic_indexes = [i for i, item in enumerate(selected) if not item.is_domestic]
                 if non_domestic_indexes:
                     selected[non_domestic_indexes[-1]] = brief
-            domestic_now = sum(1 for x in selected)
+            domestic_now = sum(1 for x in selected if x.is_domestic)
             selected_keys = {s.key() for s in selected}
     LOGGER.info("Selected %s report cases, including %s domestic cases, requested count=%s min_domestic=%s", len(selected[:count]), sum(1 for x in selected[:count] if x.is_domestic), count, min_domestic)
     return selected[:count]
