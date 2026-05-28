@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -72,6 +73,25 @@ class CaseBrief:
             "seller_motivation": self.seller_motivation,
             "financial_highlights": self.financial_highlights,
         }
+
+
+def excluded_terms() -> list[str]:
+    raw = os.getenv("REPORT_EXCLUDE_CASE_TERMS", "")
+    return [term.strip().lower() for term in re.split(r"[,，;；\n]+", raw) if term.strip()]
+
+
+def is_excluded_case(brief: CaseBrief) -> bool:
+    terms = excluded_terms()
+    if not terms:
+        return False
+    text = "\n".join([
+        brief.case_name,
+        brief.acquirer,
+        brief.target,
+        brief.source_title,
+        brief.why,
+    ]).lower()
+    return any(term in text for term in terms)
 
 
 def safe_category(value: str | None) -> str:
@@ -150,7 +170,7 @@ def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False)
             seller_motivation=str(row.get("seller_motivation") or ""),
             financial_highlights=str(row.get("financial_highlights") or ""),
         )
-        if brief.is_allowed_topic():
+        if brief.is_allowed_topic() and not is_excluded_case(brief):
             briefs.append(brief)
     return briefs
 
@@ -174,6 +194,7 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
     if not raw_items:
         return []
     sample = [item.as_dict() for item in raw_items[: min(len(raw_items), 220)]]
+    exclude = "、".join(excluded_terms())
     messages = [
         {"role": "system", "content": "你是并购案例研究选题编辑。只输出 JSON。"},
         {
@@ -182,6 +203,7 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
                 "从候选新闻/公告中筛选适合写成并购案例分析报告的交易。"
                 f"选题规则：{TOPIC_SELECTION_RULES}"
                 "优先中国案例；交易主体、交易事件、完成时间、交易对价和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、未完成或终止交易。"
+                + (f"不要选择包含这些主体或关键词的案例：{exclude}。" if exclude else "")
                 f"最多输出 {target_count} 个。分类只能用：{json.dumps(CATEGORIES, ensure_ascii=False)}。"
                 "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false,\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_motivation\":...,\"seller_motivation\":...,\"financial_highlights\":...}]}。"
                 f"候选：{json.dumps(sample, ensure_ascii=False)}"
@@ -208,7 +230,7 @@ def dedupe_briefs(briefs: list[CaseBrief]) -> list[CaseBrief]:
     seen: set[str] = set()
     out: list[CaseBrief] = []
     for brief in briefs:
-        if not brief.is_allowed_topic():
+        if not brief.is_allowed_topic() or is_excluded_case(brief):
             continue
         key = brief.key()
         if key in seen:
@@ -261,11 +283,10 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
             if len(selected) < count:
                 selected.append(brief)
             else:
-                # Replace the least preferred non-domestic case first.
                 non_domestic_indexes = [i for i, item in enumerate(selected) if not item.is_domestic]
                 if non_domestic_indexes:
                     selected[non_domestic_indexes[-1]] = brief
-            domestic_now = sum(1 for x in selected if x.is_domestic)
+            domestic_now = sum(1 for x in selected)
             selected_keys = {s.key() for s in selected}
     LOGGER.info("Selected %s report cases, including %s domestic cases, requested count=%s min_domestic=%s", len(selected[:count]), sum(1 for x in selected[:count] if x.is_domestic), count, min_domestic)
     return selected[:count]
