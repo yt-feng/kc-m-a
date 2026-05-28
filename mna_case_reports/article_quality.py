@@ -32,6 +32,10 @@ TEMPLATE_PHRASES = (
     "只能回到公开资料",
 )
 
+WEAK_TITLE_PHRASES = (
+    "交易复盘", "案例分析", "并购案例", "交易启示", "交易观察", "并购启示", "案例研究",
+    "一文看懂", "深度解析", "全面复盘", "重大交易",
+)
 GENERIC_CONCLUSION_PHRASES = (
     "并购不是终点",
     "整合才是开始",
@@ -44,7 +48,7 @@ GENERIC_CONCLUSION_PHRASES = (
 
 MEDIA_MARKERS = ("据媒体报道", "据报道", "媒体报道称", "市场认为", "市场传闻", "有媒体称")
 UNCERTAIN_SOURCE_TERMS = ("媒体报道", "市场传闻", "市场消息", "知情人士", "外媒", "报道称")
-INFERENCE_MARKERS = ("据此推断", "合理推断", "这一判断基于", "推理依据", "从披露信息可以看出")
+INFERENCE_MARKERS = ("据此推断", "合理推断", "这一判断基于", "推理依据", "从披露信息可以看出", "基于上述披露")
 
 INDUSTRY_TERMS = (
     "行业", "产业", "产业链", "竞争格局", "市场格局", "供需", "周期", "渗透率", "客户结构",
@@ -114,6 +118,21 @@ def _paragraph_openings(paragraphs: list[str]) -> Counter[str]:
     return Counter(openings)
 
 
+def _title_quality_issues(article: dict[str, object]) -> list[str]:
+    title = str(article.get("title") or "")
+    issues: list[str] = []
+    if any(phrase in title for phrase in WEAK_TITLE_PHRASES):
+        issues.append("标题仍然平淡或模板化，不能只写'交易复盘/案例分析/交易启示'，应点出本案核心交易逻辑或分析重点。")
+    if "：" not in title:
+        issues.append("标题需要采用主副标题形式，并让副标题承担分析重点，而不是空泛概括。")
+    after_colon = title.split("：", 1)[-1] if "：" in title else title
+    if len(after_colon) < 6:
+        issues.append("标题副标题信息量不足，需要突出对价结构、控制权、业务承接、财务影响或产业逻辑之一。")
+    if not any(term in title for term in STRUCTURE_TERMS + INDUSTRY_TERMS + FINANCIAL_TERMS + ("承接", "协同", "治理", "平台", "私有化", "控制权")):
+        issues.append("标题缺少核心交易逻辑关键词，需要体现交易结构、产业位置、控制权、财务影响或承接重点。")
+    return issues
+
+
 def assess_quality(article: dict[str, object]) -> list[str]:
     """Return issues that indicate template-like structure or shallow analysis."""
     issues: list[str] = []
@@ -121,12 +140,14 @@ def assess_quality(article: dict[str, object]) -> list[str]:
     headings = _heading_texts(article)
     paragraphs = _paragraphs(article)
 
+    issues.extend(_title_quality_issues(article))
+
     template_heading_count = _template_heading_count(headings)
-    if template_heading_count >= 3:
+    if template_heading_count >= 2:
         issues.append("文章结构仍像固定模板：多个章节标题来自默认框架，需要按本案例最有信息量的材料重新组织结构。")
 
     phrase_hits = [phrase for phrase in TEMPLATE_PHRASES if text.count(phrase) >= 1]
-    if len(phrase_hits) >= 3:
+    if len(phrase_hits) >= 2:
         issues.append("正文出现较多模板化连接语，需要改成围绕案例事实推进的自然叙述，而不是'公开资料显示/从某角度看'式堆叠。")
 
     opening_counts = _paragraph_openings(paragraphs)
@@ -139,32 +160,32 @@ def assess_quality(article: dict[str, object]) -> list[str]:
         issues.append("各章节段落数量过于整齐，结构像模板；应根据材料重点调整章节长短。")
 
     depth_categories = 0
-    if _count_terms(text, INDUSTRY_TERMS) >= 3:
+    if _count_terms(text, INDUSTRY_TERMS) >= 4:
         depth_categories += 1
-    if _count_terms(text, STRUCTURE_TERMS) >= 4:
+    if _count_terms(text, STRUCTURE_TERMS) >= 5:
         depth_categories += 1
-    if _count_terms(text, METHODOLOGY_TERMS) >= 3:
+    if _count_terms(text, METHODOLOGY_TERMS) >= 4:
         depth_categories += 1
-    if _count_terms(text, FINANCIAL_TERMS) >= 4:
+    if _count_terms(text, FINANCIAL_TERMS) >= 5:
         depth_categories += 1
     if depth_categories < 3:
         issues.append("分析深度不足：需要同时展开至少三个层面，例如产业判断、交易结构、财务影响、交割承接或并购方法论意义。")
 
     long_paragraphs = [p for p in paragraphs if len(re.sub(r"\s+", "", p)) >= 260]
-    if len(long_paragraphs) < 3:
+    if len(long_paragraphs) < 4:
         issues.append("长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。")
 
-    if not any(term in text for term in ("方法论", "同类并购", "执行条件", "核验", "治理边界", "交割承接", "整合节奏")):
+    if not any(term in text for term in ("方法论", "同类并购", "执行条件", "核验", "治理边界", "交割承接", "整合节奏", "条款安排")):
         issues.append("缺少并购方法论意义，需要把案例事实提炼为同类交易可参考的资料核验、条款安排或交割承接经验。")
 
-    if not any(term in text for term in ("产业链", "行业", "竞争格局", "客户结构", "技术路线", "商业模式", "资源禀赋")):
+    if not any(term in text for term in ("产业链", "行业", "竞争格局", "客户结构", "技术路线", "商业模式", "资源禀赋", "产业位置")):
         issues.append("缺少产业层面的判断，需要结合标的所处行业、客户/产品/资源位置或竞争格局解释交易意义。")
 
     last_text = _last_section_text(article)
     if any(phrase in last_text for phrase in GENERIC_CONCLUSION_PHRASES):
         issues.append("结语出现泛泛表达，需要紧扣本案例的交易双方、对价结构、业务承接和披露事实，而不是通用口号。")
-    if last_text and _count_terms(last_text, STRUCTURE_TERMS + METHODOLOGY_TERMS + FINANCIAL_TERMS) < 4:
-        issues.append("结语/启示深度不足，需要回到本案例的交易结构、财务数据、交割承接或方法论意义。")
+    if last_text and _count_terms(last_text, STRUCTURE_TERMS + METHODOLOGY_TERMS + FINANCIAL_TERMS + INDUSTRY_TERMS) < 5:
+        issues.append("结语/启示深度不足，需要回到本案例的交易结构、财务数据、产业位置、交割承接或方法论意义。")
 
     if any(term in text for term in UNCERTAIN_SOURCE_TERMS) and not any(marker in text for marker in MEDIA_MARKERS):
         issues.append("涉及媒体报道、市场传闻或消息来源时，必须明确写成'据媒体报道'或'市场认为'，不得当作确定事实。")
