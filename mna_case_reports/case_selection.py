@@ -20,6 +20,7 @@ from .deepseek_client import chat_json
 
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+VAGUE_PARTY_TERMS = ("未披露", "未知", "不详", "某标的", "标的资产", "标的公司", "相关资产", "部分资产")
 
 
 @dataclass
@@ -78,6 +79,32 @@ class CaseBrief:
 def excluded_terms() -> list[str]:
     raw = os.getenv("REPORT_EXCLUDE_CASE_TERMS", "")
     return [term.strip().lower() for term in re.split(r"[,，;；\n]+", raw) if term.strip()]
+
+
+def infer_parties_from_name(case_name: str) -> tuple[str, str]:
+    parts = re.split(r"收购|并购|入主|吸收合并|私有化|合并|出售|控股|取得", case_name or "", maxsplit=1)
+    if len(parts) >= 2:
+        return parts[0].strip(), parts[1].strip()
+    return "", ""
+
+
+def is_vague_party(value: str) -> bool:
+    text = (value or "").strip()
+    if len(text) < 2:
+        return True
+    return any(term in text for term in VAGUE_PARTY_TERMS)
+
+
+def has_explicit_parties(brief: CaseBrief) -> bool:
+    acquirer = brief.acquirer
+    target = brief.target
+    inferred_a, inferred_t = infer_parties_from_name(brief.case_name)
+    acquirer = acquirer or inferred_a
+    target = target or inferred_t
+    if is_vague_party(acquirer) or is_vague_party(target):
+        return False
+    combined = "\n".join([brief.case_name, brief.acquirer, brief.target, brief.source_title, brief.why])
+    return not any(term in combined for term in VAGUE_PARTY_TERMS)
 
 
 def is_excluded_case(brief: CaseBrief) -> bool:
@@ -142,6 +169,7 @@ def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False)
         case_name = str(row.get("case_name") or "").strip()
         if not case_name:
             continue
+        inferred_a, inferred_t = infer_parties_from_name(case_name)
         region = str(row.get("region") or "中国")
         completed_year = str(row.get("completed_year") or infer_completed_year(case_name, str(row.get("why") or "")))
         is_completed = str(row.get("is_completed", "true")).lower() == "true"
@@ -162,15 +190,15 @@ def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False)
             is_classic=is_classic,
             completed_year=completed_year,
             is_completed=is_completed,
-            acquirer=str(row.get("acquirer") or ""),
-            target=str(row.get("target") or ""),
+            acquirer=str(row.get("acquirer") or inferred_a),
+            target=str(row.get("target") or inferred_t),
             deal_value=str(row.get("deal_value") or ""),
             deal_status=str(row.get("deal_status") or ""),
             buyer_motivation=str(row.get("buyer_motivation") or ""),
             seller_motivation=str(row.get("seller_motivation") or ""),
             financial_highlights=str(row.get("financial_highlights") or ""),
         )
-        if brief.is_allowed_topic() and not is_excluded_case(brief):
+        if brief.is_allowed_topic() and has_explicit_parties(brief) and not is_excluded_case(brief):
             briefs.append(brief)
     return briefs
 
@@ -198,6 +226,8 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
     prompt_parts = [
         "从候选新闻/公告中筛选适合写成并购案例分析报告的交易。",
         f"选题规则：{TOPIC_SELECTION_RULES}",
+        "优先选择并购方和并购标的名称明确、交易金额或估值线索明确的案例。",
+        "严禁选择标的名称为未披露、未知、不详、某标的、标的资产、标的公司的案例。",
         "优先中国案例；交易主体、交易事件、完成时间、交易对价和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、未完成或终止交易。",
     ]
     if exclude:
@@ -231,7 +261,7 @@ def dedupe_briefs(briefs: list[CaseBrief]) -> list[CaseBrief]:
     seen: set[str] = set()
     out: list[CaseBrief] = []
     for brief in briefs:
-        if not brief.is_allowed_topic() or is_excluded_case(brief):
+        if not brief.is_allowed_topic() or not has_explicit_parties(brief) or is_excluded_case(brief):
             continue
         key = brief.key()
         if key in seen:
