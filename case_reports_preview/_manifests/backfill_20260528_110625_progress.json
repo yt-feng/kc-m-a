@@ -1,0 +1,11 @@
+{
+  "mode": "backfill",
+  "run_label": "backfill_20260528_110625",
+  "requested_count": 1,
+  "selected_count": 1,
+  "count": 1,
+  "files": [
+    "case_reports_preview/02_上市平台持续整合/backfill_20260528_110625_美团现金买断叮咚买菜中国业务：盈利期资产的全资整合样本.docx"
+  ],
+  "failures": []
+}
