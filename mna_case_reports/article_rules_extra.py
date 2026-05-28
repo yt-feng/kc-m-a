@@ -32,8 +32,9 @@ trim_article = base.trim_article
 extract_research_fact_lines = base.extract_research_fact_lines
 
 COMPANY_SUFFIX = r"(?:股份有限公司|有限责任公司|科技有限公司|娱乐集团|有限公司|集团|公司)"
-BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”）([{CJK}A-Za-z0-9·&]+{COMPANY_SUFFIX})")
-DUP_NOTE_PATTERN = re.compile(r"（下称“([^”]+)”）（下称“\1”）")
+BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”(?:，[^）]+)?）([{CJK}A-Za-z0-9·&]+{COMPANY_SUFFIX})")
+DUP_NOTE_PATTERN = re.compile(r"(?P<note>（下称“[^”]+”(?:，[^）]+)?）)(?P=note)+")
+ANY_COMPANY_NOTE_PATTERN = re.compile(r"（下称“[^”]+”(?:，[^）]+)?）")
 KNOWN_COMPANY_NOTES = {
     "腾讯音乐娱乐集团": "腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）",
     "Tencent Music Entertainment Group": "腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）",
@@ -62,49 +63,92 @@ def convert_halfwidth_quotes(text: str) -> str:
     return "".join(out)
 
 
-def _strip_note_after_company(text: str, full_name: str) -> str:
+def normalize_ticker_punctuation(text: str) -> str:
+    return (
+        text.replace("NYSE:TME", "NYSE：TME")
+        .replace("NYSE： TME", "NYSE：TME")
+        .replace("NASDAQ:AMD", "NASDAQ：AMD")
+        .replace("NASDAQ： AMD", "NASDAQ：AMD")
+        .replace("NASDAQ:INTC", "NASDAQ：INTC")
+        .replace("NASDAQ： INTC", "NASDAQ：INTC")
+    )
+
+
+def _strip_all_notes_after_company(text: str, full_name: str) -> str:
+    """Remove one or more immediate short-name notes after a legal name."""
     escaped = re.escape(full_name)
-    return re.sub(escaped + r"（下称“[^”]+”(?:，[^）]+)?）", full_name, text)
+    return re.sub(escaped + r"(?:（下称“[^”]+”(?:，[^）]+)?）)+", full_name, text)
 
 
-def repair_party_annotation_text(text: str) -> str:
+def _collapse_duplicate_notes(text: str) -> str:
+    previous = None
+    while previous != text:
+        previous = text
+        text = DUP_NOTE_PATTERN.sub(lambda m: m.group("note"), text)
+    return text
+
+
+def _repair_split_notes(text: str) -> str:
+    previous = None
+    while previous != text:
+        previous = text
+        text = BAD_SPLIT_NOTE_PATTERN.sub(lambda m: f"{m.group(1)}{m.group(3)}（下称“{m.group(2)}”）", text)
+        text = _collapse_duplicate_notes(text)
+    return text
+
+
+def _apply_known_company_notes(text: str, *, add_known_notes: bool) -> str:
+    # First remove repeated notes after known legal names. Then add one canonical
+    # note only where we actually want first-mention annotations.
+    for full_name in KNOWN_COMPANY_NOTES:
+        if full_name in text:
+            text = _strip_all_notes_after_company(text, full_name)
+    if add_known_notes:
+        for full_name, canonical in KNOWN_COMPANY_NOTES.items():
+            if full_name in text:
+                text = text.replace(full_name, canonical, 1)
+    return _collapse_duplicate_notes(text)
+
+
+def strip_company_notes(text: str) -> str:
+    """Remove parenthetical short-name notes, useful for titles."""
+    text = convert_halfwidth_quotes(str(text or ""))
+    text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
+    text = _repair_split_notes(text)
+    text = ANY_COMPANY_NOTE_PATTERN.sub("", text)
+    return base.normalize_text(text)
+
+
+def repair_party_annotation_text(text: str, *, add_known_notes: bool = True) -> str:
     """Repair malformed first-mention annotations.
 
     Examples fixed:
     - 腾讯音乐（下文简称“腾讯音乐”）娱乐集团 -> 腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）
     - 上海喜马拉雅（下称“喜马拉雅”）科技有限公司（下称“喜马拉雅”）
       -> 上海喜马拉雅科技有限公司（下称“喜马拉雅”）
+    - 腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME） repeated many times
+      -> one canonical note only.
     """
     text = convert_halfwidth_quotes(str(text or ""))
-    text = text.replace("（下文简称“", "（下称“")
-    previous = None
-    while previous != text:
-        previous = text
-        text = BAD_SPLIT_NOTE_PATTERN.sub(lambda m: f"{m.group(1)}{m.group(3)}（下称“{m.group(2)}”）", text)
-        text = DUP_NOTE_PATTERN.sub(lambda m: f"（下称“{m.group(1)}”）", text)
-    # Re-apply known legal-name annotations after split-note repair.
-    for full_name, canonical in KNOWN_COMPANY_NOTES.items():
-        if full_name in text:
-            text = _strip_note_after_company(text, full_name)
-            text = text.replace(full_name, canonical, 1)
-    # Remove duplicate canonical annotations introduced by model + postprocess.
-    for _full_name, canonical in KNOWN_COMPANY_NOTES.items():
-        text = text.replace(canonical + canonical, canonical)
+    text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
+    text = _repair_split_notes(text)
+    text = _apply_known_company_notes(text, add_known_notes=add_known_notes)
     return base.normalize_text(text)
 
 
 def _walk_text_fields(article: dict[str, object]) -> None:
-    article["title"] = repair_party_annotation_text(str(article.get("title") or ""))
-    article["intro"] = repair_party_annotation_text(str(article.get("intro") or ""))
+    # Titles should be concise and should not carry first-mention legal notes.
+    article["title"] = strip_company_notes(str(article.get("title") or ""))
+    article["intro"] = repair_party_annotation_text(str(article.get("intro") or ""), add_known_notes=True)
     sections = article.get("sections") or []
     if isinstance(sections, list):
         for sec in sections:
             if not isinstance(sec, dict):
                 continue
-            sec["heading"] = repair_party_annotation_text(str(sec.get("heading") or ""))
+            sec["heading"] = strip_company_notes(str(sec.get("heading") or ""))
             paragraphs = sec.get("paragraphs") or []
             if isinstance(paragraphs, list):
-                sec["paragraphs"] = [repair_party_annotation_text(str(p)) for p in paragraphs]
+                sec["paragraphs"] = [repair_party_annotation_text(str(p), add_known_notes=True) for p in paragraphs]
 
 
 def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[str, object]:
@@ -118,10 +162,14 @@ def _has_malformed_party_annotation(text: str) -> bool:
         return True
     if BAD_SPLIT_NOTE_PATTERN.search(text):
         return True
-    if DUP_NOTE_PATTERN.search(text):
-        return True
     # A short name note immediately followed by company-name suffix is almost always wrong.
     if re.search(r"（下称“[^”]+”(?:，[^）]+)?）(?:娱乐集团|科技有限公司|股份有限公司|有限责任公司|有限公司)", text):
+        return True
+    for full_name in KNOWN_COMPANY_NOTES:
+        pattern = re.escape(full_name) + r"(?:（下称“[^”]+”(?:，[^）]+)?）){2,}"
+        if re.search(pattern, text):
+            return True
+    if DUP_NOTE_PATTERN.search(text):
         return True
     return False
 
@@ -135,7 +183,7 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
     postprocess_article(article, brief)
     text = article_text(article)
     if _has_malformed_party_annotation(text):
-        issues.append("公司首次出现的简称标注位置错误，应写在完整公司名称之后，例如“上海喜马拉雅科技有限公司（下称“喜马拉雅”）”。")
+        issues.append("公司首次出现的简称标注位置错误或重复，应写在完整公司名称之后且只出现一次，例如“上海喜马拉雅科技有限公司（下称“喜马拉雅”）”。")
     if _has_halfwidth_quote(text):
         issues.append("文中的引号需要使用全角中文引号“”。")
     return issues
