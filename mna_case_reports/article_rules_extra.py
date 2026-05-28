@@ -1,8 +1,8 @@
 """Additional article post-processing rules.
 
-This module wraps :mod:`article_rules` with fixes that are hard to express in
-prompting alone: full-width quote conversion and repair of party-name first
-mention annotations that were inserted inside a longer company name.
+This module wraps article_rules with fixes that are hard to express in prompting
+alone: full-width quote conversion and repair of party-name first-mention
+annotations that were inserted inside a longer company name.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from typing import Any
 from . import article_rules as base
 from .case_selection import CaseBrief
 
-# Re-export constants and helpers used by other modules.
 MIN_CHARS = base.MIN_CHARS
 TARGET_MIN_CHARS = base.TARGET_MIN_CHARS
 TARGET_MAX_CHARS = base.TARGET_MAX_CHARS
@@ -33,12 +32,20 @@ trim_article = base.trim_article
 extract_research_fact_lines = base.extract_research_fact_lines
 
 COMPANY_SUFFIX = r"(?:股份有限公司|有限责任公司|科技有限公司|娱乐集团|有限公司|集团|公司)"
-BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·]+)（下称“([^”]+)”）([{CJK}A-Za-z0-9·]+{COMPANY_SUFFIX})")
+BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”）([{CJK}A-Za-z0-9·&]+{COMPANY_SUFFIX})")
 DUP_NOTE_PATTERN = re.compile(r"（下称“([^”]+)”）（下称“\1”）")
+KNOWN_COMPANY_NOTES = {
+    "腾讯音乐娱乐集团": "腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）",
+    "Tencent Music Entertainment Group": "腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）",
+    "上海喜马拉雅科技有限公司": "上海喜马拉雅科技有限公司（下称“喜马拉雅”）",
+    "Advanced Micro Devices": "Advanced Micro Devices, Inc.（下称“AMD”，NASDAQ：AMD）",
+    "ZT Systems": "ZT Systems（下称“ZT Systems”）",
+    "Intel Corporation": "Intel Corporation（下称“Intel”，NASDAQ：INTC）",
+}
 
 
 def convert_halfwidth_quotes(text: str) -> str:
-    """Convert half-width straight quotes in generated Chinese prose to full-width quotes."""
+    """Convert straight half-width quotes to Chinese full-width quotes."""
     text = str(text or "")
     out: list[str] = []
     double_open = True
@@ -55,11 +62,16 @@ def convert_halfwidth_quotes(text: str) -> str:
     return "".join(out)
 
 
+def _strip_note_after_company(text: str, full_name: str) -> str:
+    escaped = re.escape(full_name)
+    return re.sub(escaped + r"（下称“[^”]+”(?:，[^）]+)?）", full_name, text)
+
+
 def repair_party_annotation_text(text: str) -> str:
     """Repair malformed first-mention annotations.
 
     Examples fixed:
-    - 腾讯音乐（下文简称“腾讯音乐”）娱乐集团 -> 腾讯音乐娱乐集团（下称“腾讯音乐”）
+    - 腾讯音乐（下文简称“腾讯音乐”）娱乐集团 -> 腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）
     - 上海喜马拉雅（下称“喜马拉雅”）科技有限公司（下称“喜马拉雅”）
       -> 上海喜马拉雅科技有限公司（下称“喜马拉雅”）
     """
@@ -70,6 +82,14 @@ def repair_party_annotation_text(text: str) -> str:
         previous = text
         text = BAD_SPLIT_NOTE_PATTERN.sub(lambda m: f"{m.group(1)}{m.group(3)}（下称“{m.group(2)}”）", text)
         text = DUP_NOTE_PATTERN.sub(lambda m: f"（下称“{m.group(1)}”）", text)
+    # Re-apply known legal-name annotations after split-note repair.
+    for full_name, canonical in KNOWN_COMPANY_NOTES.items():
+        if full_name in text:
+            text = _strip_note_after_company(text, full_name)
+            text = text.replace(full_name, canonical, 1)
+    # Remove duplicate canonical annotations introduced by model + postprocess.
+    for _full_name, canonical in KNOWN_COMPANY_NOTES.items():
+        text = text.replace(canonical + canonical, canonical)
     return base.normalize_text(text)
 
 
@@ -96,10 +116,12 @@ def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[st
 def _has_malformed_party_annotation(text: str) -> bool:
     if "下文简称" in text:
         return True
-    # Detect an annotation followed immediately by more company-name text.
     if BAD_SPLIT_NOTE_PATTERN.search(text):
         return True
     if DUP_NOTE_PATTERN.search(text):
+        return True
+    # A short name note immediately followed by company-name suffix is almost always wrong.
+    if re.search(r"（下称“[^”]+”(?:，[^）]+)?）(?:娱乐集团|科技有限公司|股份有限公司|有限责任公司|有限公司)", text):
         return True
     return False
 
@@ -113,12 +135,11 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
     postprocess_article(article, brief)
     text = article_text(article)
     if _has_malformed_party_annotation(text):
-        issues.append("公司首次出现的简称标注位置错误，应写在完整公司名称之后，例如'上海喜马拉雅科技有限公司（下称“喜马拉雅”）'。")
+        issues.append("公司首次出现的简称标注位置错误，应写在完整公司名称之后，例如“上海喜马拉雅科技有限公司（下称“喜马拉雅”）”。")
     if _has_halfwidth_quote(text):
         issues.append("文中的引号需要使用全角中文引号“”。")
     return issues
 
 
 def normalize_article_text_fields(article: dict[str, Any], brief: CaseBrief) -> dict[str, Any]:
-    """Public helper for tests or future migration."""
     return postprocess_article(article, brief)
