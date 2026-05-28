@@ -1,5 +1,5 @@
 name: One-off M&A report preview
-# preview trigger: 2026-05-28T11:18:00+08:00
+# preview trigger: 2026-05-28T11:32:00+08:00
 
 on:
   push:
@@ -64,6 +64,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Mark preview start
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP"
+          touch "$RUNNER_TEMP/preview_start_marker"
+
       - name: Generate one preview report
         run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
 
@@ -71,11 +78,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git status --porcelain "$REPORT_OUTPUT_ROOT" | sed 's/^...//' | grep '\.docx$' > "$RUNNER_TEMP/generated_preview_docx_files.txt" || true
-          echo "Generated or changed DOCX files in this run:"
+          find "$REPORT_OUTPUT_ROOT" -type f -name "*.docx" -newer "$RUNNER_TEMP/preview_start_marker" -print | sort > "$RUNNER_TEMP/generated_preview_docx_files.txt" || true
+          echo "Generated or overwritten DOCX files in this run:"
           cat "$RUNNER_TEMP/generated_preview_docx_files.txt" || true
           if [ ! -s "$RUNNER_TEMP/generated_preview_docx_files.txt" ]; then
-            echo "No generated or changed DOCX files found for this run."
+            echo "No generated or overwritten DOCX files found for this run."
             exit 1
           fi
 
