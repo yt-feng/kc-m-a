@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 HEADING_RE = re.compile(r"^[一二三四五六七八九十]+、")
+HALF_WIDTH_QUOTE_RE = re.compile(r"[\"']")
 
 
 def wval(element: ET.Element | None, name: str) -> str | None:
@@ -81,6 +82,18 @@ def run_has_font(p: ET.Element, east_asia: str | None = None, size_half_points: 
     return True
 
 
+def half_width_quote_snippets(text: str, limit: int = 5) -> list[str]:
+    snippets: list[str] = []
+    for match in HALF_WIDTH_QUOTE_RE.finditer(text):
+        start = max(0, match.start() - 18)
+        end = min(len(text), match.end() + 18)
+        snippet = text[start:end].replace("\n", " ")
+        snippets.append(snippet)
+        if len(snippets) >= limit:
+            break
+    return snippets
+
+
 def validate_docx(path: Path) -> dict[str, object]:
     issues: list[str] = []
     try:
@@ -98,6 +111,11 @@ def validate_docx(path: Path) -> dict[str, object]:
     if not paragraphs:
         issues.append("文档没有可检测正文段落。")
         return {"file": str(path), "ok": False, "issues": issues}
+
+    full_text = "\n".join(para_text(p) for p in paragraphs)
+    quote_snippets = half_width_quote_snippets(full_text)
+    if quote_snippets:
+        issues.append("正文仍存在半角引号，需要全部改为全角中文引号“”：" + " | ".join(quote_snippets))
 
     title = paragraphs[0]
     if not has_alignment(title, "center"):
@@ -138,7 +156,7 @@ def validate_docx(path: Path) -> dict[str, object]:
     if body_count < 8:
         issues.append(f"正文段落数量偏少，检测到{body_count}个。")
 
-    return {"file": str(path), "ok": not issues, "issues": issues[:80], "heading_count": heading_count, "body_count": body_count}
+    return {"file": str(path), "ok": not issues, "issues": issues[:80], "heading_count": heading_count, "body_count": body_count, "half_width_quote_count": len(HALF_WIDTH_QUOTE_RE.findall(full_text))}
 
 
 def main() -> None:
