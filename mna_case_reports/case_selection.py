@@ -290,36 +290,69 @@ def discover_backfill_cases(target_count: int) -> list[CaseBrief]:
 def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: int = 2, report_root: Path) -> list[CaseBrief]:
     deduped = dedupe_briefs(briefs)
     counts = existing_counts(report_root)
+    selected: list[CaseBrief] = []
+    selected_keys: set[str] = set()
+    selected_category_counts: Counter[str] = Counter()
 
-    def score(b: CaseBrief) -> tuple[int, int, int, int]:
+    def score(b: CaseBrief) -> tuple[int, int, int, int, int]:
+        selected_category_penalty = selected_category_counts[b.category] * 100
+        existing_category_penalty = counts[b.category] + (2 if b.category == "SPAC" else 0)
         topic_rank = 0 if b.is_recent_completed() else 1
         domestic_rank = 0 if b.is_domestic else 1
         classic_penalty = 1 if b.is_classic else 0
-        category_count = counts[b.category] + (2 if b.category == "SPAC" else 0)
-        return (topic_rank, category_count, domestic_rank, classic_penalty)
+        return (selected_category_penalty, existing_category_penalty, topic_rank, domestic_rank, classic_penalty)
 
-    selected: list[CaseBrief] = []
-    for brief in sorted(deduped, key=score):
+    # First pass: prefer one case per category, starting from historically underrepresented folders.
+    for category in sorted(CATEGORIES, key=lambda c: counts[c] + (2 if c == "SPAC" else 0)):
+        if len(selected) >= count:
+            break
+        category_candidates = [b for b in deduped if b.category == category and b.key() not in selected_keys]
+        if not category_candidates:
+            continue
+        brief = sorted(category_candidates, key=score)[0]
+        selected.append(brief)
+        selected_keys.add(brief.key())
+        selected_category_counts[brief.category] += 1
+        counts[brief.category] += 1
+
+    # Second pass: fill any remaining slots, still penalizing categories already selected in this run.
+    for brief in sorted([b for b in deduped if b.key() not in selected_keys], key=score):
         if len(selected) >= count:
             break
         selected.append(brief)
+        selected_keys.add(brief.key())
+        selected_category_counts[brief.category] += 1
         counts[brief.category] += 1
 
     domestic_now = sum(1 for x in selected if x.is_domestic)
     if domestic_now < min_domestic:
-        selected_keys = {s.key() for s in selected}
         for brief in sorted([b for b in deduped if b.is_domestic and b.key() not in selected_keys], key=score):
             if domestic_now >= min_domestic:
                 break
-            if len(selected) < count:
-                selected.append(brief)
-            else:
-                non_domestic_indexes = [i for i, item in enumerate(selected) if not item.is_domestic]
-                if non_domestic_indexes:
-                    selected[non_domestic_indexes[-1]] = brief
+            replace_indexes = sorted(
+                [i for i, item in enumerate(selected) if not item.is_domestic],
+                key=lambda i: selected_category_counts[selected[i].category],
+                reverse=True,
+            )
+            if not replace_indexes:
+                break
+            idx = replace_indexes[0]
+            old = selected[idx]
+            selected_category_counts[old.category] -= 1
+            selected_keys.discard(old.key())
+            selected[idx] = brief
+            selected_keys.add(brief.key())
+            selected_category_counts[brief.category] += 1
             domestic_now = sum(1 for x in selected if x.is_domestic)
-            selected_keys = {s.key() for s in selected}
-    LOGGER.info("Selected %s report cases, including %s domestic cases, requested count=%s min_domestic=%s", len(selected[:count]), sum(1 for x in selected[:count] if x.is_domestic), count, min_domestic)
+
+    LOGGER.info(
+        "Selected %s report cases, including %s domestic cases, categories=%s, requested count=%s min_domestic=%s",
+        len(selected[:count]),
+        sum(1 for x in selected[:count] if x.is_domestic),
+        dict(Counter(x.category for x in selected[:count])),
+        count,
+        min_domestic,
+    )
     return selected[:count]
 
 
