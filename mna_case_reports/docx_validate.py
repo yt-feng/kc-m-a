@@ -18,6 +18,7 @@ NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 HEADING_RE = re.compile(r"^[一二三四五六七八九十]+、")
 HALF_WIDTH_QUOTE_RE = re.compile(r"[\"']")
+FULL_WIDTH_QUOTE_CHARS = set("“”‘’")
 
 
 def wval(element: ET.Element | None, name: str) -> str | None:
@@ -28,6 +29,10 @@ def wval(element: ET.Element | None, name: str) -> str | None:
 
 def para_text(p: ET.Element) -> str:
     return "".join(t.text or "" for t in p.findall(".//w:t", NS)).strip()
+
+
+def run_text(r: ET.Element) -> str:
+    return "".join(t.text or "" for t in r.findall(".//w:t", NS))
 
 
 def ppr(p: ET.Element) -> ET.Element | None:
@@ -58,17 +63,26 @@ def has_alignment(p: ET.Element, expected: str) -> bool:
     return jc is not None and wval(jc, "val") == expected
 
 
+def is_fullwidth_quote_run(text: str) -> bool:
+    return bool(text) and all(char in FULL_WIDTH_QUOTE_CHARS for char in text)
+
+
 def run_has_font(p: ET.Element, east_asia: str | None = None, size_half_points: str | None = None, bold: bool | None = None) -> bool:
-    runs = [r for r in p.findall("w:r", NS) if para_text(r)]
+    runs = [r for r in p.findall("w:r", NS) if run_text(r)]
     if not runs:
         runs = p.findall("w:r", NS)
     for r in runs:
+        text = run_text(r)
         rpr = r.find("w:rPr", NS)
         if rpr is None:
             return False
         if east_asia is not None:
             fonts = rpr.find("w:rFonts", NS)
-            if fonts is None or wval(fonts, "eastAsia") != east_asia:
+            actual_east_asia = wval(fonts, "eastAsia") if fonts is not None else None
+            if is_fullwidth_quote_run(text):
+                if actual_east_asia != "Times New Roman":
+                    return False
+            elif actual_east_asia != east_asia:
                 return False
         if size_half_points is not None:
             sz = rpr.find("w:sz", NS)
@@ -125,7 +139,7 @@ def validate_docx(path: Path) -> dict[str, object]:
     if not has_spacing_zero(title):
         issues.append("一级标题段前/段后应为0。")
     if not run_has_font(title, east_asia="黑体", size_half_points="30", bold=False):
-        issues.append("一级标题应为黑体、小三、非加粗。")
+        issues.append("一级标题应为黑体、小三、非加粗；全角引号可单独使用Times New Roman。")
 
     heading_count = 0
     body_count = 0
@@ -141,7 +155,7 @@ def validate_docx(path: Path) -> dict[str, object]:
             if not has_spacing_zero(p):
                 issues.append(f"章标题段前/段后应为0：{text[:30]}")
             if not run_has_font(p, east_asia="仿宋", size_half_points="28", bold=True):
-                issues.append(f"章标题应为仿宋、加粗、四号：{text[:30]}")
+                issues.append(f"章标题应为仿宋、加粗、四号；全角引号可单独使用Times New Roman：{text[:30]}")
         else:
             body_count += 1
             if not has_first_line_chars(p):
@@ -149,7 +163,7 @@ def validate_docx(path: Path) -> dict[str, object]:
             if not has_spacing_zero(p):
                 issues.append(f"正文段落段前/段后应为0：{text[:30]}")
             if not run_has_font(p, east_asia="仿宋", size_half_points="28", bold=None):
-                issues.append(f"正文应为仿宋、四号：{text[:30]}")
+                issues.append(f"正文应为仿宋、四号；全角引号可单独使用Times New Roman：{text[:30]}")
 
     if heading_count < 4:
         issues.append(f"章标题数量偏少，检测到{heading_count}个。")
