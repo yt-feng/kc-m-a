@@ -1,5 +1,5 @@
 name: One-off M&A report preview
-# preview trigger: 2026-05-28T10:58:00+08:00
+# preview trigger: 2026-05-28T11:08:00+08:00
 
 on:
   push:
@@ -67,12 +67,26 @@ jobs:
       - name: Generate one preview report
         run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
 
+      - name: Collect generated preview DOCX files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --porcelain "$REPORT_OUTPUT_ROOT" | sed 's/^...//' | grep '\.docx$' > "$RUNNER_TEMP/generated_preview_docx_files.txt" || true
+          echo "Generated or changed DOCX files in this run:"
+          cat "$RUNNER_TEMP/generated_preview_docx_files.txt" || true
+          if [ ! -s "$RUNNER_TEMP/generated_preview_docx_files.txt" ]; then
+            echo "No generated or changed DOCX files found for this run."
+            exit 1
+          fi
+
       - name: Validate preview DOCX format and text
         shell: bash
         run: |
+          set -euo pipefail
           if [ -d "$REPORT_OUTPUT_ROOT" ]; then
             mkdir -p "$REPORT_OUTPUT_ROOT/_manifests"
-            python -m mna_case_reports.docx_validate "$REPORT_OUTPUT_ROOT" --write-json "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json"
+            mapfile -t generated_docx < "$RUNNER_TEMP/generated_preview_docx_files.txt"
+            python -m mna_case_reports.docx_validate "${generated_docx[@]}" --write-json "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json"
           else
             echo "$REPORT_OUTPUT_ROOT directory does not exist; skip DOCX validation."
             exit 1
