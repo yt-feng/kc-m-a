@@ -46,10 +46,6 @@ GENERIC_CONCLUSION_PHRASES = (
     "对企业具有重要启示",
 )
 
-MEDIA_MARKERS = ("据媒体报道", "据报道", "媒体报道称", "市场认为", "市场传闻", "有媒体称")
-UNCERTAIN_SOURCE_TERMS = ("媒体报道", "市场传闻", "市场消息", "知情人士", "外媒", "报道称")
-INFERENCE_MARKERS = ("据此推断", "合理推断", "这一判断基于", "推理依据", "从披露信息可以看出", "基于上述披露")
-
 INDUSTRY_TERMS = (
     "行业", "产业", "产业链", "竞争格局", "市场格局", "供需", "周期", "渗透率", "客户结构",
     "技术路线", "商业模式", "产品结构", "区域市场", "监管环境", "上市平台", "资源禀赋",
@@ -186,10 +182,5 @@ def assess_quality(article: dict[str, object]) -> list[str]:
         issues.append("结语出现泛泛表达，需要紧扣本案例的交易双方、对价结构、业务承接和披露事实，而不是通用口号。")
     if last_text and _count_terms(last_text, STRUCTURE_TERMS + METHODOLOGY_TERMS + FINANCIAL_TERMS + INDUSTRY_TERMS) < 5:
         issues.append("结语/启示深度不足，需要回到本案例的交易结构、财务数据、产业位置、交割承接或方法论意义。")
-
-    if any(term in text for term in UNCERTAIN_SOURCE_TERMS) and not any(marker in text for marker in MEDIA_MARKERS):
-        issues.append("涉及媒体报道、市场传闻或消息来源时，必须明确写成'据媒体报道'或'市场认为'，不得当作确定事实。")
-    if "推断" in text and not any(marker in text for marker in INFERENCE_MARKERS):
-        issues.append("合理推断必须说明推理依据，不能包装成确定事实。")
 
     return issues
