@@ -206,6 +206,14 @@ def normalize_sections(article: dict[str, object]) -> list[tuple[str, list[str]]
     return out
 
 
+def run_text_is_quote_only(value: str) -> bool:
+    return bool(value) and all(char in QUOTE_CHARS for char in value)
+
+
+def preserve_run_bold(run) -> bool:
+    return run.font.bold is True
+
+
 def enforce_document_format(doc: Document) -> None:
     set_doc_grid(doc)
     for idx, paragraph in enumerate(doc.paragraphs):
@@ -215,8 +223,12 @@ def enforce_document_format(doc: Document) -> None:
         else:
             set_paragraph_first_line_chars(paragraph)
         for run in paragraph.runs:
-            if run.text in QUOTE_CHARS:
-                set_run_font(run, east_asia="Times New Roman", latin="Times New Roman", size_pt=run.font.size.pt if run.font.size else 14)
+            # Quote marks must use Times New Roman, but must preserve the paragraph
+            # context such as bold chapter headings. Previously this reset quote
+            # runs in headings to non-bold, causing DOCX validation failures.
+            if run_text_is_quote_only(run.text):
+                size_pt = run.font.size.pt if run.font.size else 14
+                set_run_font(run, east_asia="Times New Roman", latin="Times New Roman", size_pt=size_pt, bold=preserve_run_bold(run))
 
 
 def write_docx(article: dict[str, object], *, category: str, output_root: Path, run_label: str = "") -> Path:
