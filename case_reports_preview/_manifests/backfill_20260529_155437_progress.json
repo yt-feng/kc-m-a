@@ -1,0 +1,11 @@
+{
+  "mode": "backfill",
+  "run_label": "backfill_20260529_155437",
+  "requested_count": 1,
+  "selected_count": 1,
+  "count": 1,
+  "files": [
+    "case_reports_preview/02_上市平台持续整合/backfill_20260529_155437_美团收购叮咚买菜中国业务：交易复盘.docx"
+  ],
+  "failures": []
+}
