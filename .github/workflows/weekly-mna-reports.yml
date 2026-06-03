@@ -2,8 +2,8 @@ name: Weekly M&A case reports
 
 on:
   schedule:
-    # 06:00 every Monday in Beijing = 22:00 every Sunday UTC.
-    - cron: "0 22 * * 0"
+    # 05:00 every Friday in Beijing = 21:00 every Thursday UTC.
+    - cron: "0 21 * * 4"
   workflow_dispatch:
     inputs:
       mode:
@@ -79,74 +79,3 @@ jobs:
             echo "case_reports directory does not exist; skip DOCX validation."
             exit 1
           fi
-
-      - name: Show generated files
-        if: always()
-        shell: bash
-        run: |
-          echo "Generated report files:"
-          if [ -d case_reports ]; then
-            find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | sort | tail -120 || true
-          else
-            echo "case_reports directory does not exist."
-          fi
-          echo "Git status:"
-          git status --short || true
-
-      - name: Upload generated report artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mna-case-reports-${{ github.run_id }}
-          path: |
-            case_reports/**/*.docx
-            case_reports/_manifests/*.json
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Commit generated reports
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          if [ ! -d case_reports ]; then
-            echo "No case_reports directory generated."
-            exit 0
-          fi
-
-          report_count="$(find case_reports -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | wc -l | tr -d ' ')"
-          echo "Report files available before commit: $report_count"
-          if [ "$report_count" = "0" ]; then
-            echo "No report files generated."
-            exit 0
-          fi
-
-          tmp_dir="$(mktemp -d)"
-          mkdir -p "$tmp_dir/case_reports"
-          cp -a case_reports/. "$tmp_dir/case_reports/"
-          commit_msg="chore: add M&A case reports $(date +'%Y-%m-%d')"
-
-          for attempt in 1 2 3; do
-            echo "Commit attempt $attempt"
-            git fetch origin main
-            git reset --hard origin/main
-            mkdir -p case_reports
-            cp -a "$tmp_dir/case_reports/." case_reports/
-            git add case_reports
-            if git diff --cached --quiet; then
-              echo "No report changes to commit."
-              exit 0
-            fi
-            git commit -m "$commit_msg"
-            if git push origin HEAD:main; then
-              echo "Pushed generated reports."
-              exit 0
-            fi
-            echo "Push rejected, retrying after refreshing origin/main."
-            sleep 5
-          done
-
-          echo "Failed to push generated reports after retries."
-          exit 1
