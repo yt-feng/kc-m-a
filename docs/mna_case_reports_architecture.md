@@ -1,8 +1,123 @@
-# Weekly M&A Case Reports 架构文档
+# kc-m-a 架构文档：Excel Deal Flow 与 Weekly M&A Case Reports
 
-更新时间：2026-05-24
+更新时间：2026-06-03
 
 ## 1. 总体判断
+
+项目现在有两条自动化 pipeline：
+
+1. **Weekly M&A cases Excel**：每周生成并购案例一览 Excel，用于 deal flow 扫描、候选留痕和后续选题。
+2. **Weekly M&A Case Reports Word**：每周生成并购案例分析 Word，用于深度案例复盘。
+
+两条 pipeline 共享一个核心前提：DeepSeek API 不联网，所有公告、新闻、PDF、监管文件和搜索结果都必须由代码先抓取、筛选、压缩，再传入模型。
+
+## 2. Excel deal flow pipeline
+
+### 2.1 执行入口
+
+```text
+.github/workflows/weekly-mna.yml
+  -> python -m mna_weekly_tracker.main --days "$DAYS" --output-dir outputs
+  -> outputs/并购案例一览_YYYYMMDD_YYYYMMDD.xlsx
+```
+
+默认参数：
+
+- 北京时间每周五 05:00 自动运行。
+- 最近 7 天窗口。
+- `MAX_RAW_ITEMS=450`。
+- `MAX_STRUCTURED_CASES=120`。
+- 输出 workbook 包含：`周度并购案例`、`运行摘要`、`跟踪信息源`、`原始候选`。
+
+### 2.2 模块职责
+
+```text
+mna_weekly_tracker/config.py
+  -> sources_fixed.py / sources_rich.py
+  -> deepseek.py
+  -> excel.py
+  -> main.py
+```
+
+- `config.py`：统一维护输出列、十大案例分类、数据源配置、关键词和专题查询。
+- `sources_fixed.py`：底层采集器，负责 CNINFO、Google News RSS、Bing News RSS、Sogou Weixin、GDELT DOC 等请求、解析、去重和候选排序。
+- `sources_rich.py`：生产入口采集编排层，提供 source summary 日志、GDELT fallback 到新闻搜索、Sogou 诊断和总候选 cap。
+- `deepseek.py`：将 raw candidates 结构化为 Excel 行；默认要求 `DEEPSEEK_API_KEY` 存在且调用成功。
+- `excel.py`：写 workbook，并把所有跟踪源和关键词写入 `跟踪信息源` sheet。
+- `main.py`：CLI orchestration，负责日期窗口、采集、结构化、写文件。
+
+### 2.3 信息源体系
+
+信息源由三组配置组成：
+
+- `TRACKED_FETCH_SOURCES`：代码会自动采集的来源。
+- `ALL_TRACKED_SOURCES`：Excel `跟踪信息源` sheet 展示的完整来源，包括自动采集源和手工核验源。
+- `MIDDLE_EAST_REFERENCE_SOURCES`：商业数据库、年度报告、新闻站点等手工核验源，不直接自动抓取，但会进入 Excel 信息源页。
+
+中国侧已覆盖：
+
+- 巨潮资讯 CNINFO API。
+- 上交所、深交所、北交所、全国股转系统。
+- SAMR/CSRC/发改委/商务部/外汇局监管关键词。
+- 港股/中概股官方披露补充。
+- 债券与非上市公司披露、国资产权交易、司法/破产资产处置、财经媒体和专业资讯。
+
+### 2.4 中东资本出海并购扩展
+
+2026-06-03 参考 `docs/中东收购海外企业信息源清单.xlsx` 增加中东收购海外企业的信息源。
+
+自动采集源包括：
+
+- 中东官方源：PIF、Mubadala、QIA、ADQ。
+- 中东产业资本：Prosperity7 / Aramco Ventures、G42、e& / Etisalat。
+- 中国侧披露补充：HKEXnews、CNINFO、上交所、深交所、SAMR 中与中东买方相关的披露。
+- 海外监管补充：SEC、欧盟并购审查、英国 CMA、ASX 等持股披露、收购文件和并购审查线索。
+- 新闻与研究线索：Google News / Bing News / GDELT 对 Middle East outbound M&A 的专题查询。
+
+手工核验源包括：
+
+- ADIA Annual Review、KIA / KIA China Office、OIA、Mumtalakat、ICD。
+- Global SWF、SWFI、LSEG、Bloomberg、Mergermarket、PitchBook、CapIQ、Zephyr。
+- Crunchbase、Dealroom、Mergr、The National、Zawya、Arab News、SCMP、AVCJ。
+
+设计原则：
+
+- 官方公告和监管披露优先级为 P1。
+- 新闻和数据库用于发现线索、补全交易字段和交叉验证。
+- 每条中东交易仍应优先回到原始公告、监管文件或公司新闻稿核验。
+
+### 2.5 候选排序和 cap 规则
+
+`MAX_RAW_ITEMS=450` 时，国内新闻候选可能超过 cap。为避免中东专题候选被挤掉，`candidate_sort_key()` 会按优先级排序：
+
+1. 标题、来源、地区或查询词命中中东买方白名单或中东地区词。
+2. 全球候选。
+3. 其他国内候选。
+
+同优先级内再按发布时间倒序排列。
+
+### 2.6 DeepSeek 结构化规则
+
+`mna_weekly_tracker/deepseek.py` 的 prompt 已补充中东买方白名单，包括 PIF、Mubadala、QIA、ADQ、ADIA、KIA、OIA、Mumtalakat、ICD、Prosperity7、G42、e& 等。
+
+结构化要求：
+
+- 中东买方收购、入股、控股、少数股权、业务剥离、私有化海外企业的案例优先识别。
+- 仅 MoU/合作、没有股权或资产交易的线索应剔除，或在备注中明确说明。
+- DeepSeek fallback 默认关闭。`DEEPSEEK_API_KEY` 缺失或 API 调用失败时直接失败，避免静默生成粗略行。
+- 只有本地调试时显式设置 `MNA_ALLOW_ROUGH_FALLBACK=1`，才允许输出 rough fallback 行。
+
+### 2.7 Excel 输出
+
+`跟踪信息源` sheet 现在输出字段：
+
+```text
+来源/查询名称、来源类型、覆盖范围、交易阶段、建议频率、优先级、URL、关键词/查询
+```
+
+其中自动采集源、手工核验源、全球查询、中东专题查询和 HKEXnews 查询都会进入该 sheet，便于人工复核每周 Excel 的覆盖范围。
+
+## 3. Word case reports pipeline
 
 这个任务不适合继续依赖单一大 prompt。原因是：
 
@@ -13,7 +128,7 @@
 
 因此采用 staged pipeline：先事实、再大纲、再正文、再验证、最后写 Word。
 
-## 2. 当前 pipeline
+## 3.1 当前 pipeline
 
 ```text
 case_selection
@@ -29,9 +144,9 @@ case_selection
   -> write_docx
 ```
 
-## 3. 最新写作与排版规则
+## 4. 最新写作与排版规则
 
-### 3.1 内容与风格
+### 4.1 内容与风格
 
 - 文档质量优先于格式统一，不要过度结构化、模式化；结构应服务于内容。
 - 每篇文章可根据材料特点调整叙述重点，可侧重产业判断、交易结构、标的质量、交割承接、财务影响或并购方法论意义。
@@ -41,25 +156,25 @@ case_selection
 - 读者画像只用于控制深度，不得在正文出现“上市公司CEO”“上市公司董事长”“读者”等提示语。
 - 事实、数字、信息必须基于公开权威资料；资料没有披露时写“公开资料未披露”，严禁编造。
 
-### 3.2 字数
+### 4.2 字数
 
 - 全文字数控制在 3,500-4,000 字。
 - 为保证逻辑完整可适当超过，但代码仍以 3,600-3,900 字作为优先目标区间。
 
-### 3.3 标题
+### 4.3 标题
 
 - 标题需准确概括文章主旨，突出案例的核心交易逻辑或分析重点，兼顾专业性与吸引力。
 - 避免过于平淡、空泛，也避免标题党式表达。
 - 主副标题必须包含交易双方名称或简称。
 
-### 3.4 标点、数字与公司名称
+### 4.4 标点、数字与公司名称
 
 - 全文使用一致的全角中文标点。
 - 不要在中文字符和英文单词或数字之间添加空格。
 - 金额、数量等类型数字应添加千分位逗号，例如 `1,276,000,000`。
 - 公司名称首次出现时，应使用括号标注其全称、下文简称和股票代码（如上市），例如：`腾讯音乐娱乐集团（Tencent Music Entertainment Group，下文简称“腾讯音乐”，NYSE：TME）`。
 
-### 3.5 Word 排版
+### 4.5 Word 排版
 
 文档网格：
 
@@ -92,9 +207,9 @@ case_selection
 - 首行缩进 2 字符
 - 段前 0、段后 0
 
-## 4. 模块职责
+## 5. Word 模块职责
 
-### 4.1 `case_selection.py`
+### 5.1 `case_selection.py`
 
 负责选题：
 
@@ -104,7 +219,7 @@ case_selection
 
 后续优化重点：继续补全 `case_pool.py` 中每个案例的结构化字段，否则 fact pack 会缺数据。
 
-### 4.2 `research.py`
+### 5.2 `research.py`
 
 负责给 DeepSeek 准备原料：
 
@@ -117,7 +232,7 @@ case_selection
 
 DeepSeek 不联网，因此这一层是事实质量的核心。
 
-### 4.3 `fact_pack.py`
+### 5.3 `fact_pack.py`
 
 负责把 `CaseBrief + research_rows` 转成紧凑事实包：
 
@@ -143,7 +258,7 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 资料没有披露的字段不编造。
 - 若缺金额、时间线、双方名称或数据，会写入 `validation_issues` 并进入日志。
 
-### 4.4 `outline_generation.py`
+### 5.4 `outline_generation.py`
 
 负责生成 4-7 个客观、中性、克制的章节标题。
 
@@ -154,7 +269,7 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 最后一章必须是 `N、结语：副标题`，N 按实际章节数编号。
 - 大纲不是固定模板，后续应按案例材料特点动态调整。
 
-### 4.5 `article_rules.py`
+### 5.5 `article_rules.py`
 
 负责：
 
@@ -168,7 +283,7 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 数据密度检查：交易金额、时间线、财务/经营数字、双方基本介绍、双方接受交易安排的原因
 - 过长自动裁剪，过短追加事实段落
 
-### 4.6 `report_generation.py`
+### 5.6 `report_generation.py`
 
 现在变为 orchestration 层，不再承载所有规则：
 
@@ -181,7 +296,7 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 7. 字数不足时调用扩写；仍不足时追加事实段落
 8. 输出 article dict 给 `docx_writer`
 
-### 4.7 `docx_writer.py`
+### 5.7 `docx_writer.py`
 
 负责 Word 输出：
 
@@ -192,9 +307,9 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 引号 Times New Roman
 - 文件名加 run label，避免覆盖旧报告
 
-## 5. 关键设计原则
+## 6. 关键设计原则
 
-### 5.1 prompt 只做适合模型做的事
+### 6.1 prompt 只做适合模型做的事
 
 模型适合：
 
@@ -209,7 +324,7 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 在缺数据时补数字
 - 同时承担事实抽取、标题、正文、字数、排版、提交等所有任务
 
-### 5.2 validation 要代码化
+### 6.2 validation 要代码化
 
 所有硬性要求都尽量在代码里检查：
 
@@ -223,7 +338,7 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 最后一章编号是否正确
 - 文档网格、标题、正文段落格式
 
-### 5.3 backfill 要批量化
+### 6.3 backfill 要批量化
 
 不建议再一次跑：
 
@@ -243,7 +358,7 @@ offset=0, 5, 10, 15...
 
 GitHub Action 已支持 offset，并会上传 artifact、保存 progress manifest、部分失败不中断整批。
 
-## 6. 当前仍需继续优化
+## 7. 当前仍需继续优化
 
 1. `case_pool.py` 中历史案例的结构化字段需要补齐，尤其是 `deal_value`、`deal_status`、`buyer_motivation`、`seller_motivation`、`financial_highlights`。
 2. `fact_pack.py` 现在是第一版，仍可增强：
@@ -255,7 +370,7 @@ GitHub Action 已支持 offset，并会上传 artifact、保存 progress manifes
 5. 需要下载生成的 docx 做真实 Word 格式验证，确认 Word UI 中确实显示“首行缩进 2 字符、段后 0 行、文档网格 linePitch=312”。
 6. 需要新增格式检查脚本，自动打开 `.docx` 的 XML 验证 `w:docGrid`、标题字号、缩进和段距。
 
-## 7. 下一步建议
+## 8. 下一步建议
 
 优先顺序：
 

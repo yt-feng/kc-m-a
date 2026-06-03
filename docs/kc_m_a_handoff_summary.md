@@ -1,13 +1,13 @@
 # kc-m-a 项目交接总结：并购 Deal Flow Excel 与 Weekly M&A Case Reports
 
-更新时间：2026-05-24
+更新时间：2026-06-03
 仓库：`yt-feng/kc-m-a`
 
 ## 1. 项目目标
 
 项目有两条主线：
 
-1. **Weekly M&A cases**：每周自动生成全球并购案例 Excel，中国为主、全球为辅。
+1. **Weekly M&A cases**：每周自动生成全球并购案例 Excel，中国为主、全球为辅，并补充跟踪中东资本收购/入股海外企业。
 2. **Weekly M&A case reports**：每周自动生成并购案例分析 Word，面向上市公司董事长/CEO，强调并购启示、交易结构、避坑和投后整合。
 
 用户已将 DeepSeek API key 放在 GitHub repo Secret 中。DeepSeek API 本身不联网，因此所有事实、数据、公告、PDF、新闻片段都必须在调用 DeepSeek 前由代码抓取并传入 prompt。
@@ -44,6 +44,28 @@ outputs/
 
 已加入或尝试加入：巨潮资讯网 CNINFO API、上交所、深交所、北交所、新三板、Google News RSS、Bing News / Bing fallback、搜狗微信、GDELT DOC、SAMR/CSRC/发改委/商务部/外汇局监管关键词、港股/中概股披露、债券市场与非上市公司披露、国资产权交易和增资挂牌、司法/破产/资产处置、财经媒体和专业资讯。
 
+### 中东资本出海并购信息源扩充
+
+2026-06-03 参考 `docs/中东收购海外企业信息源清单.xlsx`，已把中东收购海外企业的信息源纳入每周 Excel。
+
+新增自动采集源：
+
+- 中东官方源：PIF、Mubadala、QIA、ADQ。
+- 中东产业资本：Prosperity7 / Aramco Ventures、G42、e& / Etisalat。
+- 中国侧披露补充：HKEXnews、CNINFO、上交所、深交所、SAMR 中与中东买方相关的公告、权益变动、定增、审批线索。
+- 海外监管补充：SEC、欧盟并购审查、英国 CMA、ASX 等持股披露、收购文件和并购审查线索。
+- 新闻与研究线索：Google News、Bing News、GDELT 对 Middle East outbound M&A 的专题查询。
+
+新增手工核验源：
+
+- ADIA Annual Review、KIA / KIA China Office、OIA、Mumtalakat、ICD。
+- Global SWF、SWFI、LSEG、Bloomberg、Mergermarket、PitchBook、CapIQ、Zephyr。
+- Crunchbase、Dealroom、Mergr、The National、Zawya、Arab News、SCMP、AVCJ。
+
+Excel `跟踪信息源` sheet 现在输出完整来源列表，包括 `优先级` 字段。`MAX_RAW_ITEMS=450` 时，`candidate_sort_key()` 会优先保留中东专题候选，避免被国内新闻候选挤出。
+
+DeepSeek 结构化默认必须成功；`DEEPSEEK_API_KEY` 缺失或 API 调用失败时不会静默生成 rough fallback 行。仅本地调试显式设置 `MNA_ALLOW_ROUGH_FALLBACK=1` 时才允许保底行。
+
 ### 已修复问题
 
 1. **Bing RSS parse failed**：Bing 中文 RSS 经常返回 HTML 或空内容，不是 XML。已通过 `sources_fixed.py` / `sources_rich.py` 做 fallback，并降低噪音。
@@ -52,7 +74,7 @@ outputs/
 
 ### 当前状态
 
-Excel 任务相对稳定。最近日志曾显示：`raw_before_cap=931 raw_after_cap=450`、`Collected 450 raw candidates`、`Structured 53 cases`。
+Excel 任务相对稳定。最近日志曾显示：`raw_before_cap=931 raw_after_cap=450`、`Collected 450 raw candidates`、`Structured 53 cases`。中东专题扩展已用真实 DeepSeek API 的 Mubadala 样本验证：可结构化为 `跨境并购`，并写入含中东信息源的 Excel。
 
 ## 3. Weekly M&A case reports：Word 报告任务
 
