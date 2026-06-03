@@ -6,9 +6,10 @@ import logging
 from datetime import datetime
 from typing import Iterable
 
-from .config import CHINA_NEWS_SOURCES, CHINA_SOURCES, GLOBAL_QUERIES, HKEX_QUERIES, SourceConfig
+from .config import GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_QUERIES, TRACKED_FETCH_SOURCES, SourceConfig
 from .sources_fixed import (
     RawItem,
+    candidate_sort_key,
     dedupe_items,
     fetch_bing_news,
     fetch_gdelt_doc,
@@ -16,6 +17,8 @@ from .sources_fixed import (
     fetch_sogou_weixin,
     fetch_source as base_fetch_source,
     parse_datetime,
+    source_region_hint,
+    source_search_locale,
     week_window,
 )
 
@@ -34,13 +37,15 @@ def _extend_unique(target: list[RawItem], additions: Iterable[RawItem]) -> None:
 
 def fetch_gdelt_with_fallback(source: SourceConfig, start: datetime, end: datetime) -> list[RawItem]:
     items: list[RawItem] = []
+    region_hint = source_region_hint(source, "中国/全球")
     for keyword in source.keywords:
-        _extend_unique(items, fetch_gdelt_doc(keyword, start, end, source_name=source.name, source_url=source.url))
+        _extend_unique(items, fetch_gdelt_doc(keyword, start, end, source_name=source.name, source_url=source.url, region_hint=region_hint))
     if items:
         return items
     # GDELT may return non-JSON/empty responses for some Chinese Boolean queries.
     # Keep the source useful by falling back to news search with the same terms.
     fallback: list[RawItem] = []
+    locale, region, market, language = source_search_locale(source)
     for keyword in source.keywords:
         _extend_unique(
             fallback,
@@ -50,9 +55,9 @@ def fetch_gdelt_with_fallback(source: SourceConfig, start: datetime, end: dateti
                 end,
                 source_name=f"{source.name} - Google fallback",
                 source_url=source.url,
-                region_hint="中国/全球",
-                locale="zh-CN",
-                region="CN",
+                region_hint=region_hint,
+                locale=locale,
+                region=region,
             ),
         )
         _extend_unique(
@@ -63,7 +68,11 @@ def fetch_gdelt_with_fallback(source: SourceConfig, start: datetime, end: dateti
                 end,
                 source_name=f"{source.name} - Bing fallback",
                 source_url=source.url,
-                region_hint="中国/全球",
+                region_hint=region_hint,
+                market=market,
+                language=language,
+                fallback_locale=locale,
+                fallback_region=region,
             ),
         )
     return fallback
@@ -91,7 +100,7 @@ def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -
     candidates: list[RawItem] = []
     source_rows: list[tuple[str, str, int]] = []
 
-    for source in CHINA_SOURCES + CHINA_NEWS_SOURCES:
+    for source in TRACKED_FETCH_SOURCES:
         try:
             items = fetch_source(source, start, end)
             source_rows.append((source.name, source.kind, len(items)))
@@ -117,6 +126,35 @@ def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -
                 region_hint="全球",
                 locale="en-US",
                 region="US",
+            ),
+        )
+    for query in MIDDLE_EAST_QUERIES:
+        _extend_unique(
+            candidates,
+            fetch_google_news(
+                query,
+                start,
+                end,
+                source_name="Google News - Middle East outbound M&A",
+                source_url="https://news.google.com/",
+                region_hint="中东/全球",
+                locale="en-US",
+                region="US",
+            ),
+        )
+        _extend_unique(
+            candidates,
+            fetch_bing_news(
+                query,
+                start,
+                end,
+                source_name="Bing News - Middle East outbound M&A",
+                source_url="https://www.bing.com/news/search?format=rss",
+                region_hint="中东/全球",
+                market="en-US",
+                language="en",
+                fallback_locale="en-US",
+                fallback_region="US",
             ),
         )
     for query in HKEX_QUERIES:
@@ -146,6 +184,6 @@ def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -
         )
 
     deduped = dedupe_items(candidates)
-    deduped.sort(key=lambda x: parse_datetime(x.published_at) or start, reverse=True)
+    deduped.sort(key=lambda x: candidate_sort_key(x, start), reverse=True)
     LOGGER.info("Source summary total: raw_before_cap=%s raw_after_cap=%s", len(deduped), min(len(deduped), max_items))
     return deduped[:max_items], errors

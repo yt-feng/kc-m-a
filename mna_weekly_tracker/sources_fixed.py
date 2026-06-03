@@ -24,7 +24,7 @@ import requests
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 
-from .config import CHINA_NEWS_SOURCES, CHINA_SOURCES, GLOBAL_QUERIES, HKEX_QUERIES, SourceConfig
+from .config import GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_BUYER_KEYWORDS, MIDDLE_EAST_QUERIES, TRACKED_FETCH_SOURCES, SourceConfig
 
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -116,6 +116,43 @@ def parse_relative_time(text: str | None, *, now: datetime) -> datetime | None:
 def in_window(value: str | None, start: datetime, end: datetime) -> bool:
     dt = parse_datetime(value)
     return True if dt is None else start <= dt <= end
+
+
+def source_region_hint(source: SourceConfig, default: str = "中国") -> str:
+    if source.region_hint:
+        return source.region_hint
+    text = f"{source.name} {source.coverage}"
+    if any(token in text for token in ("中东", "沙特", "阿联酋", "卡塔尔", "Mubadala", "PIF", "QIA", "ADQ")):
+        return "中东/全球"
+    return default
+
+
+def source_search_locale(source: SourceConfig) -> tuple[str, str, str, str]:
+    hint = source_region_hint(source)
+    if hint.startswith("中东/全球") or hint.startswith("中东/海外"):
+        return "en-US", "US", "en-US", "en"
+    return "zh-CN", "CN", "zh-CN", "zh-cn"
+
+
+def raw_item_priority(item: RawItem) -> int:
+    text = f"{item.region_hint} {item.source_name} {item.query} {item.title}"
+    if any(token in text for token in ("中东", "沙特", "阿联酋", "卡塔尔", "阿布扎比", "穆巴达拉")):
+        return 2
+    text_n = normalize_text(text)
+    for keyword in MIDDLE_EAST_BUYER_KEYWORDS:
+        keyword_n = normalize_text(keyword)
+        if len(keyword_n) <= 4:
+            if re.search(rf"\b{re.escape(keyword_n)}\b", text_n):
+                return 2
+        elif keyword_n in text_n:
+            return 2
+    if "全球" in item.region_hint:
+        return 1
+    return 0
+
+
+def candidate_sort_key(item: RawItem, fallback_dt: datetime) -> tuple[int, datetime]:
+    return raw_item_priority(item), parse_datetime(item.published_at) or fallback_dt
 
 
 def request_with_retries(method: str, url: str, *, retries: int = 1, sleep_seconds: float = 1.0, **kwargs) -> requests.Response:
@@ -223,15 +260,29 @@ def fetch_google_news(query: str, start: datetime, end: datetime, *, source_name
     return rss_items(google_news_url(rss_query, locale=locale, region=region), query, start, end, source_name=source_name, source_url=source_url, region_hint=region_hint)
 
 
-def bing_news_url(query: str) -> str:
-    return "https://www.bing.com/news/search?" + urllib.parse.urlencode({"q": query, "format": "rss", "mkt": "zh-CN", "setlang": "zh-cn"})
+def bing_news_url(query: str, *, market: str = "zh-CN", language: str = "zh-cn") -> str:
+    return "https://www.bing.com/news/search?" + urllib.parse.urlencode({"q": query, "format": "rss", "mkt": market, "setlang": language})
 
 
-def fetch_bing_news(query: str, start: datetime, end: datetime, *, source_name: str = "Bing News", source_url: str = "https://www.bing.com/news/search", region_hint: str = "中国") -> list[RawItem]:
-    items = rss_items(bing_news_url(query), query, start, end, source_name=f"{source_name} RSS", source_url=source_url, region_hint=region_hint)
+def fetch_bing_news(
+    query: str,
+    start: datetime,
+    end: datetime,
+    *,
+    source_name: str = "Bing News",
+    source_url: str = "https://www.bing.com/news/search",
+    region_hint: str = "中国",
+    market: str = "zh-CN",
+    language: str = "zh-cn",
+    fallback_locale: str | None = None,
+    fallback_region: str | None = None,
+) -> list[RawItem]:
+    items = rss_items(bing_news_url(query, market=market, language=language), query, start, end, source_name=f"{source_name} RSS", source_url=source_url, region_hint=region_hint)
     if items:
         return items
-    return fetch_google_news(query, start, end, source_name=f"{source_name} via Google News", source_url=source_url, region_hint=region_hint, locale="zh-CN", region="CN")
+    locale = fallback_locale or ("en-US" if market.lower().startswith("en") else "zh-CN")
+    region = fallback_region or ("US" if market.lower().endswith("us") else "CN")
+    return fetch_google_news(query, start, end, source_name=f"{source_name} via Google News", source_url=source_url, region_hint=region_hint, locale=locale, region=region)
 
 
 def fetch_sogou_weixin(query: str, start: datetime, end: datetime, *, source_name: str = "搜狗微信", source_url: str = "https://weixin.sogou.com/weixin", limit: int = 10) -> list[RawItem]:
@@ -284,24 +335,26 @@ def fetch_gdelt_doc(query: str, start: datetime, end: datetime, *, source_name: 
 
 
 def fetch_source(source: SourceConfig, start: datetime, end: datetime) -> list[RawItem]:
+    region_hint = source_region_hint(source)
+    locale, region, market, language = source_search_locale(source)
     if source.kind == "cninfo_api":
         return fetch_cninfo(source, start, end)
     if source.kind == "google_news_site":
         out: list[RawItem] = []
         base = source.site_query or urllib.parse.urlparse(source.url).netloc
         for kw in source.keywords:
-            out.extend(fetch_google_news(f"{base} {kw}", start, end, source_name=source.name, source_url=source.url, region_hint="中国"))
-            out.extend(fetch_bing_news(f"{base} {kw}", start, end, source_name=f"{source.name} - Bing补充", source_url=source.url, region_hint="中国"))
+            out.extend(fetch_google_news(f"{base} {kw}", start, end, source_name=source.name, source_url=source.url, region_hint=region_hint, locale=locale, region=region))
+            out.extend(fetch_bing_news(f"{base} {kw}", start, end, source_name=f"{source.name} - Bing补充", source_url=source.url, region_hint=region_hint, market=market, language=language, fallback_locale=locale, fallback_region=region))
         return out
     if source.kind == "google_news_search":
         out = []
         for kw in source.keywords:
-            out.extend(fetch_google_news(kw, start, end, source_name=source.name, source_url=source.url, region_hint="中国"))
+            out.extend(fetch_google_news(kw, start, end, source_name=source.name, source_url=source.url, region_hint=region_hint, locale=locale, region=region))
         return out
     if source.kind == "bing_news_search":
         out = []
         for kw in source.keywords:
-            out.extend(fetch_bing_news(kw, start, end, source_name=source.name, source_url=source.url, region_hint="中国"))
+            out.extend(fetch_bing_news(kw, start, end, source_name=source.name, source_url=source.url, region_hint=region_hint, market=market, language=language, fallback_locale=locale, fallback_region=region))
         return out
     if source.kind == "sogou_weixin_search":
         out = []
@@ -311,7 +364,7 @@ def fetch_source(source: SourceConfig, start: datetime, end: datetime) -> list[R
     if source.kind == "gdelt_doc":
         out = []
         for kw in source.keywords:
-            out.extend(fetch_gdelt_doc(kw, start, end, source_name=source.name, source_url=source.url))
+            out.extend(fetch_gdelt_doc(kw, start, end, source_name=source.name, source_url=source.url, region_hint=region_hint))
         return out
     raise ValueError(f"unsupported source kind: {source.kind} ({source.name})")
 
@@ -319,7 +372,7 @@ def fetch_source(source: SourceConfig, start: datetime, end: datetime) -> list[R
 def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -> tuple[list[RawItem], list[str]]:
     errors: list[str] = []
     candidates: list[RawItem] = []
-    for source in CHINA_SOURCES + CHINA_NEWS_SOURCES:
+    for source in TRACKED_FETCH_SOURCES:
         try:
             candidates.extend(fetch_source(source, start, end))
         except Exception as exc:  # noqa: BLE001
@@ -328,11 +381,14 @@ def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -
             errors.append(msg)
     for query in GLOBAL_QUERIES:
         candidates.extend(fetch_google_news(query, start, end, source_name="Google News - Global M&A", source_url="https://news.google.com/", region_hint="全球", locale="en-US", region="US"))
+    for query in MIDDLE_EAST_QUERIES:
+        candidates.extend(fetch_google_news(query, start, end, source_name="Google News - Middle East outbound M&A", source_url="https://news.google.com/", region_hint="中东/全球", locale="en-US", region="US"))
+        candidates.extend(fetch_bing_news(query, start, end, source_name="Bing News - Middle East outbound M&A", source_url="https://www.bing.com/news/search?format=rss", region_hint="中东/全球", market="en-US", language="en", fallback_locale="en-US", fallback_region="US"))
     for query in HKEX_QUERIES:
         candidates.extend(fetch_google_news(query, start, end, source_name="Google News - HKEXnews", source_url="https://www.hkexnews.hk/", region_hint="中国香港/全球"))
         candidates.extend(fetch_bing_news(query, start, end, source_name="Bing News - HKEXnews", source_url="https://www.hkexnews.hk/", region_hint="中国香港/全球"))
     deduped = dedupe_items(candidates)
-    deduped.sort(key=lambda x: parse_datetime(x.published_at) or start, reverse=True)
+    deduped.sort(key=lambda x: candidate_sort_key(x, start), reverse=True)
     return deduped[:max_items], errors
 
 

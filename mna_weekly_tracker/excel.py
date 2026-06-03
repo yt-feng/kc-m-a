@@ -10,7 +10,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.dimensions import ColumnDimension
 
-from .config import CHINA_SOURCES, CATEGORIES, OUTPUT_COLUMNS
+from .config import ALL_TRACKED_SOURCES, CATEGORIES, GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_QUERIES, OUTPUT_COLUMNS
 from .sources import RawItem
 
 HEADER_FILL = "0B7D73"
@@ -88,15 +88,17 @@ def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
     sources = wb.create_sheet("跟踪信息源")
-    sources.append(["来源/查询名称", "来源类型", "覆盖范围", "交易阶段", "建议频率", "URL", "关键词/查询"])
-    for source in CHINA_SOURCES:
-        sources.append([source.name, source.kind, source.coverage, source.stage, source.frequency, source.url, "；".join(source.keywords)])
-    sources.append(["Google News - Global M&A", "google_news_rss", "全球并购新闻", "宣告/进展/交割", "每周", "https://news.google.com/", "global M&A / acquisition / merger / takeover"])
+    sources.append(["来源/查询名称", "来源类型", "覆盖范围", "交易阶段", "建议频率", "优先级", "URL", "关键词/查询"])
+    for source in ALL_TRACKED_SOURCES:
+        sources.append([source.name, source.kind, source.coverage, source.stage, source.frequency, source.priority or "-", source.url, "；".join(source.keywords)])
+    sources.append(["Google News - Global M&A", "google_news_rss", "全球并购新闻", "宣告/进展/交割", "每周", "-", "https://news.google.com/", "；".join(GLOBAL_QUERIES)])
+    sources.append(["Google/Bing News - Middle East outbound M&A", "news_search", "中东主权基金、政府控股平台和产业资本收购/入股海外企业", "早期线索/宣告/完成", "每周", "P2", "https://news.google.com/；https://www.bing.com/news/search?format=rss", "；".join(MIDDLE_EAST_QUERIES)])
+    sources.append(["Google/Bing News - HKEXnews", "news_search", "港股中国企业并购、收购、私有化、主要交易", "公告/股东批准/完成", "每周", "P1", "https://www.hkexnews.hk/", "；".join(HKEX_QUERIES)])
     for cell in sources[1]:
         cell.fill = PatternFill(fill_type="solid", fgColor=HEADER_FILL)
         cell.font = Font(color=HEADER_FONT, bold=True)
         cell.alignment = Alignment(horizontal="center", wrap_text=True)
-    for idx, width in enumerate([32, 18, 34, 18, 14, 56, 80], start=1):
+    for idx, width in enumerate([36, 18, 38, 20, 16, 10, 58, 86], start=1):
         sources.column_dimensions[get_column_letter(idx)].width = width
     for row in sources.iter_rows():
         for cell in row:

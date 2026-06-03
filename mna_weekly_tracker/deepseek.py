@@ -24,6 +24,10 @@ class DeepSeekError(RuntimeError):
     pass
 
 
+def allow_rough_fallback() -> bool:
+    return os.getenv("MNA_ALLOW_ROUGH_FALLBACK", "").strip().lower() in {"1", "true", "yes", "y"}
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
@@ -102,8 +106,9 @@ A 列「案例分类」只能从以下 10 个分类中选择：
 4. 案例一句话简介要像投行案例库标题一样精炼，突出交易亮点或资本运作特点，30-60 个中文字符为宜。
 5. 交易状态优先用：已完成、进行中、审批中、终止、意向、未知。
 6. 中国 A 股/港股案例优先保留；全球新闻只保留具有明确交易金额、交易双方或战略意义的案例。
-7. 严格去重，同一交易只输出一行，URL 取最能证明交易的来源。
-8. JSON 规则：只能输出 JSON；字符串中的英文双引号必须转义；不得输出尾随逗号、注释、Markdown、未闭合字符串或未转义换行。
+7. 对中东买方（如 PIF、Mubadala、QIA、ADQ、ADIA、KIA、OIA、Mumtalakat、ICD、Prosperity7、G42、e& 等）收购、入股、控股、少数股权、业务剥离、私有化海外企业的案例优先识别；若只是 MoU/合作且没有股权或资产交易，剔除或在备注中明确说明。
+8. 严格去重，同一交易只输出一行，URL 取最能证明交易的来源。
+9. JSON 规则：只能输出 JSON；字符串中的英文双引号必须转义；不得输出尾随逗号、注释、Markdown、未闭合字符串或未转义换行。
 
 候选信息 JSON：
 {json.dumps(raw_items, ensure_ascii=False, separators=(",", ":"))}
@@ -153,7 +158,9 @@ def infer_category_from_text(text: str) -> str:
         return "破产重整"
     if any(k in text for k in ["私有化", "退市", "回归A股"]):
         return "私有化+境内上市"
-    if any(k in text for k in ["跨境", "海外", "境外", "收购海外", "acquires", "acquisition"]):
+    if any(k in text_n for k in ["mubadala", "public investment fund", "pif", "qia", "adq", "adia", "prosperity7", "g42", "etisalat"]):
+        return "跨境并购"
+    if any(k in text for k in ["跨境", "海外", "境外", "收购海外", "acquires", "acquisition", "takeover", "stake", "subscription", "placing"]):
         return "跨境并购"
     if any(k in text for k in ["借壳", "重组上市", "置入资产"]):
         return "重组上市（借壳，含类借壳）"
@@ -203,6 +210,8 @@ def parse_deepseek_batch(batch: list[RawItem], start_label: str, end_label: str,
         normalized = [normalize_case(row) for row in batch_cases if isinstance(row, dict)]
         return normalized[:MAX_CASES_PER_BATCH]
     except Exception as exc:  # noqa: BLE001
+        if not allow_rough_fallback():
+            raise DeepSeekError(f"DeepSeek batch {batch_index} failed and rough fallback is disabled: {exc}") from exc
         LOGGER.warning("DeepSeek batch %s failed; using rough fallback for this batch. error=%s content_prefix=%s", batch_index, exc, content[:500])
         return rough_cases_from_items(batch, limit=3)
 
@@ -211,6 +220,8 @@ def structure_cases(items: list[RawItem], *, start_label: str, end_label: str, b
     if not items:
         return []
     if not os.getenv("DEEPSEEK_API_KEY"):
+        if not allow_rough_fallback():
+            raise DeepSeekError("DEEPSEEK_API_KEY is not set and rough fallback is disabled")
         LOGGER.warning("DEEPSEEK_API_KEY is not set; using rough fallback rows")
         return rough_cases_from_items(items, limit=max_cases)
     all_cases: list[dict[str, str]] = []
