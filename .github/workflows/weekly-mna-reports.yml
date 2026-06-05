@@ -66,16 +66,110 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Mark report generation start
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP"
+          touch "$RUNNER_TEMP/weekly_reports_start_marker"
+
       - name: Generate M&A case reports
         run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --days "$REPORT_LOOKBACK_DAYS" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
 
-      - name: Validate DOCX format and text
+      - name: Collect generated weekly DOCX files
         shell: bash
         run: |
-          if [ -d case_reports ]; then
-            mkdir -p case_reports/_manifests
-            python -m mna_case_reports.docx_validate case_reports --write-json "case_reports/_manifests/docx_format_validation_${{ github.run_id }}.json"
-          else
-            echo "case_reports directory does not exist; skip DOCX validation."
+          set -euo pipefail
+          find "$REPORT_OUTPUT_ROOT" -type f -name "*.docx" -newer "$RUNNER_TEMP/weekly_reports_start_marker" -print | sort > "$RUNNER_TEMP/generated_weekly_docx_files.txt" || true
+          echo "Generated or overwritten DOCX files in this run:"
+          cat "$RUNNER_TEMP/generated_weekly_docx_files.txt" || true
+          if [ ! -s "$RUNNER_TEMP/generated_weekly_docx_files.txt" ]; then
+            echo "No generated or overwritten DOCX files found for this run."
+            echo "Recent DOCX files for debugging:"
+            find "$REPORT_OUTPUT_ROOT" -type f -name "*.docx" -printf "%TY-%Tm-%Td %TH:%TM:%TS %p\n" | sort | tail -20 || true
             exit 1
           fi
+
+      - name: Validate current DOCX format and text
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "$REPORT_OUTPUT_ROOT" ]; then
+            mkdir -p "$REPORT_OUTPUT_ROOT/_manifests"
+            mapfile -t generated_docx < "$RUNNER_TEMP/generated_weekly_docx_files.txt"
+            python -m mna_case_reports.docx_validate "${generated_docx[@]}" --write-json "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json"
+          else
+            echo "$REPORT_OUTPUT_ROOT directory does not exist; skip DOCX validation."
+            exit 1
+          fi
+
+      - name: Show generated files
+        if: always()
+        shell: bash
+        run: |
+          echo "Generated report files:"
+          if [ -d "$REPORT_OUTPUT_ROOT" ]; then
+            find "$REPORT_OUTPUT_ROOT" -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | sort | tail -120 || true
+          else
+            echo "$REPORT_OUTPUT_ROOT directory does not exist."
+          fi
+          echo "Git status:"
+          git status --short || true
+
+      - name: Upload generated report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mna-case-reports-${{ github.run_id }}
+          path: |
+            case_reports/**/*.docx
+            case_reports/_manifests/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit generated reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ ! -d "$REPORT_OUTPUT_ROOT" ]; then
+            echo "No $REPORT_OUTPUT_ROOT directory generated."
+            exit 0
+          fi
+
+          report_count="$(find "$REPORT_OUTPUT_ROOT" -type f \( -name "*.docx" -o -path "*/_manifests/*.json" \) -print | wc -l | tr -d ' ')"
+          echo "Report files available before commit: $report_count"
+          if [ "$report_count" = "0" ]; then
+            echo "No report files generated."
+            exit 0
+          fi
+
+          tmp_dir="$(mktemp -d)"
+          mkdir -p "$tmp_dir/$REPORT_OUTPUT_ROOT"
+          cp -a "$REPORT_OUTPUT_ROOT/." "$tmp_dir/$REPORT_OUTPUT_ROOT/"
+          commit_msg="chore: add M&A case reports $(date +'%Y-%m-%d')"
+
+          for attempt in 1 2 3; do
+            echo "Commit attempt $attempt"
+            git fetch origin main
+            git reset --hard origin/main
+            mkdir -p "$REPORT_OUTPUT_ROOT"
+            cp -a "$tmp_dir/$REPORT_OUTPUT_ROOT/." "$REPORT_OUTPUT_ROOT/"
+            git add "$REPORT_OUTPUT_ROOT"
+            if git diff --cached --quiet; then
+              echo "No report changes to commit."
+              exit 0
+            fi
+            git commit -m "$commit_msg"
+            if git push origin HEAD:main; then
+              echo "Pushed generated reports."
+              exit 0
+            fi
+            echo "Push rejected, retrying after refreshing origin/main."
+            sleep 5
+          done
+
+          echo "Failed to push generated reports after retries."
+          exit 1
