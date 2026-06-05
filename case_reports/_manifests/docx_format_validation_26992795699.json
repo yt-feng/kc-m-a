@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/01_整合一级资产_资本化/weekly_20260605_111733_AMD收购ZTSystems并剥离制造业务：逆向整合的实践.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 17,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260605_111733_上海概伦电子收购成都锐成芯微科技：交易复盘.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 17,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/04_重组上市_借壳_类借壳/weekly_20260605_111733_中际装备并购苏州旭创：股份加现金锁定利益，交割承接决定成败.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 11,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/07_私有化_境内上市/weekly_20260605_111733_奇虎360私有化回归A股：财团、借壳与监管博弈的系统工程.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 14,
+      "half_width_quote_count": 0
+    }
+  ]
+}
