@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/01_整合一级资产_资本化/weekly_20260612_065448_AMD收购ZTSystems并剥离制造业务：交易复盘.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 12,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/04_重组上市_借壳_类借壳/weekly_20260612_065448_中际装备并购苏州旭创：资产承接与资料核验的双重闭环.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/07_私有化_境内上市/weekly_20260612_065448_奇虎360收购回归A股：交易复盘.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 21,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/08_SPAC/weekly_20260612_065448_微牛证券通过SPAC收购上市：交易复盘.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 14,
+      "half_width_quote_count": 0
+    }
+  ]
+}
