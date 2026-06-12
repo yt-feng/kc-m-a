@@ -29,6 +29,15 @@ from .config import GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_BUYER_KEYWORDS, MI
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 USER_AGENT = "Mozilla/5.0 AppleWebKit/537.36 Chrome/124 Safari/537.36"
+WRAPPER_HOSTS = (
+    "news.google.com",
+    "www.google.com",
+    "google.com",
+    "www.bing.com",
+    "bing.com",
+    "weixin.sogou.com",
+)
+URL_RESOLVE_CACHE: dict[str, str] = {}
 
 
 @dataclass
@@ -173,6 +182,73 @@ def request_with_retries(method: str, url: str, *, retries: int = 1, sleep_secon
     raise RuntimeError(f"request failed for {url}: {last_exc}")
 
 
+def is_wrapper_url(url: str) -> bool:
+    try:
+        host = urllib.parse.urlsplit(url).netloc.lower()
+    except ValueError:
+        return False
+    return any(host == wrapper or host.endswith("." + wrapper) for wrapper in WRAPPER_HOSTS)
+
+
+def url_from_query_params(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return ""
+    params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    for key in ("url", "u", "q", "target", "to"):
+        for value in params.get(key, []):
+            candidate = urllib.parse.unquote(value).strip()
+            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate):
+                return candidate
+    return ""
+
+
+def url_from_html(html_text: str) -> str:
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    for selector, attr in (("link[rel=canonical]", "href"), ("meta[property='og:url']", "content")):
+        node = soup.select_one(selector)
+        if node:
+            candidate = (node.get(attr) or "").strip()
+            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate):
+                return candidate
+    for a in soup.select("a[href]"):
+        candidate = urllib.parse.unquote(a.get("href") or "").strip()
+        if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate):
+            return candidate
+    return ""
+
+
+def resolve_original_url(url: str) -> str:
+    """Best-effort conversion of Google/Bing/Sogou wrapper URLs to original URLs."""
+    url = (url or "").strip()
+    if not url:
+        return url
+    if url in URL_RESOLVE_CACHE:
+        return URL_RESOLVE_CACHE[url]
+    direct = url_from_query_params(url)
+    if direct:
+        URL_RESOLVE_CACHE[url] = direct
+        return direct
+    if not is_wrapper_url(url):
+        URL_RESOLVE_CACHE[url] = url
+        return url
+    resolved = url
+    try:
+        response = request_with_retries("GET", url, retries=0, timeout=8, allow_redirects=True)
+        final_url = response.url or url
+        if final_url.startswith(("http://", "https://")) and not is_wrapper_url(final_url):
+            resolved = final_url
+        else:
+            html_candidate = url_from_html(response.text)
+            if html_candidate:
+                resolved = html_candidate
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.debug("URL resolve skipped: url=%s error=%s", url, exc)
+    URL_RESOLVE_CACHE[url] = resolved
+    return resolved
+
+
 def fetch_cninfo(source: SourceConfig, start: datetime, end: datetime, page_size: int = 50) -> list[RawItem]:
     endpoint = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
     headers = {
@@ -245,7 +321,7 @@ def rss_items(url: str, query: str, start: datetime, end: datetime, *, source_na
                 published = dt.isoformat() if dt else pub_date
         if title and link and in_window(published, start, end):
             source = f"{source_name} / {publisher}" if publisher else source_name
-            out.append(RawItem(title, link, source, source_url, published, summary, region_hint, query))
+            out.append(RawItem(title, resolve_original_url(link), source, source_url, published, summary, region_hint, query))
     return out
 
 
@@ -305,7 +381,7 @@ def fetch_sogou_weixin(query: str, start: datetime, end: datetime, *, source_nam
         dt = parse_relative_time(time_text, now=end)
         published = dt.isoformat() if dt else ""
         if title and link and in_window(published, start, end):
-            out.append(RawItem(title, link, source_name, source_url, published, summary, "中国/微信", query))
+            out.append(RawItem(title, resolve_original_url(link), source_name, source_url, published, summary, "中国/微信", query))
     return out
 
 
@@ -369,6 +445,18 @@ def fetch_source(source: SourceConfig, start: datetime, end: datetime) -> list[R
     raise ValueError(f"unsupported source kind: {source.kind} ({source.name})")
 
 
+def dedupe_items(items: Iterable[RawItem]) -> list[RawItem]:
+    seen: set[str] = set()
+    out: list[RawItem] = []
+    for item in items:
+        key = item.stable_key()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -> tuple[list[RawItem], list[str]]:
     errors: list[str] = []
     candidates: list[RawItem] = []
@@ -385,20 +473,9 @@ def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -
         candidates.extend(fetch_google_news(query, start, end, source_name="Google News - Middle East outbound M&A", source_url="https://news.google.com/", region_hint="中东/全球", locale="en-US", region="US"))
         candidates.extend(fetch_bing_news(query, start, end, source_name="Bing News - Middle East outbound M&A", source_url="https://www.bing.com/news/search?format=rss", region_hint="中东/全球", market="en-US", language="en", fallback_locale="en-US", fallback_region="US"))
     for query in HKEX_QUERIES:
-        candidates.extend(fetch_google_news(query, start, end, source_name="Google News - HKEXnews", source_url="https://www.hkexnews.hk/", region_hint="中国香港/全球"))
+        candidates.extend(fetch_google_news(query, start, end, source_name="Google News - HKEXnews", source_url="https://www.hkexnews.hk/", region_hint="中国香港/全球", locale="zh-CN", region="CN"))
         candidates.extend(fetch_bing_news(query, start, end, source_name="Bing News - HKEXnews", source_url="https://www.hkexnews.hk/", region_hint="中国香港/全球"))
     deduped = dedupe_items(candidates)
     deduped.sort(key=lambda x: candidate_sort_key(x, start), reverse=True)
+    LOGGER.info("Collected candidates: raw=%s deduped=%s capped=%s", len(candidates), len(deduped), min(len(deduped), max_items))
     return deduped[:max_items], errors
-
-
-def dedupe_items(items: Iterable[RawItem]) -> list[RawItem]:
-    seen: set[str] = set()
-    out: list[RawItem] = []
-    for item in items:
-        key = item.stable_key()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(item)
-    return out
