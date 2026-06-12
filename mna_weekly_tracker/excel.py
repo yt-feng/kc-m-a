@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,8 @@ HEADER_FILL = "0B7D73"
 HEADER_FONT = "FFFFFF"
 CATEGORY_FILL = "FFF2CC"
 BORDER_COLOR = "B7B7B7"
+HYPERLINK_COLOR = "0563C1"
+URL_RE = re.compile(r"https?://[^\s；;，,。)）\]】>\"']+")
 
 COLUMN_WIDTHS = {
     "A": 24, "B": 8, "C": 24, "D": 28, "E": 28, "F": 26, "G": 26, "H": 52,
@@ -28,6 +31,38 @@ def safe_cell(value: object) -> object:
     if isinstance(value, str) and value.startswith("="):
         return "'" + value
     return value
+
+
+def first_url(value: object) -> str:
+    """Return the first real http(s) URL contained in a cell value.
+
+    Excel supports only one hyperlink target per cell. When a cell contains
+    multiple URLs separated by Chinese semicolons, use the first valid URL as
+    the click target while keeping the full display text in the cell.
+    """
+    if value is None:
+        return ""
+    match = URL_RE.search(str(value).strip())
+    return match.group(0).strip() if match else ""
+
+
+def make_url_cell_clickable(cell) -> None:
+    url = first_url(cell.value)
+    if not url:
+        return
+    cell.hyperlink = url
+    cell.font = Font(color=HYPERLINK_COLOR, underline="single")
+
+
+def apply_hyperlinks(ws, header_names: tuple[str, ...] = ("URL",)) -> None:
+    """Convert URL text columns into real Excel hyperlinks."""
+    header_to_col = {str(cell.value or "").strip(): cell.column for cell in ws[1]}
+    for header in header_names:
+        col_idx = header_to_col.get(header)
+        if not col_idx:
+            continue
+        for row_idx in range(2, ws.max_row + 1):
+            make_url_cell_clickable(ws.cell(row=row_idx, column=col_idx))
 
 
 def style_sheet(ws) -> None:
@@ -52,6 +87,7 @@ def style_sheet(ws) -> None:
         ws.column_dimensions[letter] = ColumnDimension(ws, index=letter, width=COLUMN_WIDTHS.get(letter, 18))
     for row_idx in range(1, ws.max_row + 1):
         ws.row_dimensions[row_idx].height = 44 if row_idx > 1 else 26
+    apply_hyperlinks(ws)
 
 
 def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors: list[str], *, start_label: str, end_label: str) -> Workbook:
@@ -103,6 +139,7 @@ def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors
     for row in sources.iter_rows():
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
+    apply_hyperlinks(sources)
 
     raw = wb.create_sheet("原始候选")
     raw.append(["标题", "来源名称", "发布时间", "地区", "查询词", "URL", "摘要"])
@@ -119,6 +156,7 @@ def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors
     for row in raw.iter_rows():
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
+    apply_hyperlinks(raw)
     return wb
 
 
