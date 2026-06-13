@@ -51,9 +51,6 @@ def validate_narrative_plan(plan: NarrativePlan) -> list[str]:
         issues.append("depth_angles不足，至少需要三个深入分析角度。")
     if len(plan.chapter_directions) < 4:
         issues.append("chapter_directions不足，无法支撑4-7章灵活结构。")
-    template_words = ("交易动机", "交易背景", "交易结构设计", "并购战略考量", "标的筛选", "并购后整合", "价值释放")
-    if any(any(word in item for word in template_words) for item in plan.chapter_directions):
-        issues.append("chapter_directions包含提纲词，容易导致模板化标题。")
     return issues
 
 
