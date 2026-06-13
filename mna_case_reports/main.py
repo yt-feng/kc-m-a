@@ -164,6 +164,17 @@ def main() -> None:
             })
             continue
         LOGGER.info("Generating report attempt %s from candidate %s/%s: %s [%s]", attempted, index, len(selected), brief.case_name, brief.category)
+        write_progress(progress_path, {
+            "mode": args.mode,
+            "run_label": run_label,
+            "requested_count": args.count,
+            "candidate_count": len(selected),
+            "attempted_count": attempted,
+            "offset": args.offset,
+            "current_case": brief.to_dict(),
+            "written": written,
+            "failures": failures,
+        })
         try:
             article = generate_article(brief)
             path = write_docx(article, category=brief.category, output_root=output_root, run_label=run_label)

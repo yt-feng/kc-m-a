@@ -28,6 +28,10 @@ DEAL_VALUE_HINTS = (
     "支付", "现金", "发行股份", "可转债", "股份数量", "最终收购", "占", "元/股", "港元/股",
     "美元/股", "每股", "purchase price", "consideration", "valuation",
 )
+BUYER_RATIONALE_HINTS = (
+    "收购目的", "购买理由", "控制权", "控股股东", "取得", "入主", "谋求", "整合", "协同",
+    "产业", "战略", "平台", "拓展", "补强", "并表", "上市公司", "buyer", "acquirer",
+)
 SELLER_ARRANGEMENT_HINTS = (
     "出售", "转让", "受让", "退出", "预受要约", "接受要约", "要约期限", "全体股东",
     "股东账户", "清算过户", "完成过户", "控制权变更", "现金要约", "减持", "协议转让",
@@ -82,6 +86,11 @@ def _is_missing_fact(value: str | None) -> bool:
     if not text:
         return True
     return text in UNKNOWN_FACT_MARKERS
+
+
+def _is_weak_disclosure_text(value: str | None) -> bool:
+    text = _compact_text(value or "")
+    return _is_missing_fact(text) or ("未披露" in text and len(text) < 30)
 
 
 def _research_blob(research_rows: list[dict[str, str]], *, max_chars: int = 30000) -> str:
@@ -159,6 +168,15 @@ def _fallback_deal_value(current: str, facts: list[str], research_rows: list[dic
     sentences = _candidate_sentences(_research_blob(research_rows)) + facts
     value_sentences = [sentence for sentence in sentences if _has_transaction_quantity(sentence)]
     return normalize_text(_best_sentence(value_sentences, DEAL_VALUE_HINTS))
+
+
+def _fallback_buyer_rationale(current: str, brief: CaseBrief, facts: list[str], research_rows: list[dict[str, str]]) -> str:
+    for value in (current, brief.buyer_motivation, brief.why, brief.source_title):
+        if not _is_weak_disclosure_text(value) and len(_compact_text(value)) >= 15:
+            return normalize_text(_compact_text(value))
+    sentences = _candidate_sentences(_research_blob(research_rows)) + facts
+    rationale = _best_sentence(sentences, BUYER_RATIONALE_HINTS, require_number=False)
+    return normalize_text(rationale)
 
 
 def _fallback_seller_rationale(current: str, facts: list[str], research_rows: list[dict[str, str]], deal_value: str) -> str:
@@ -239,6 +257,7 @@ def _initial_fact_pack(brief: CaseBrief, research_rows: list[dict[str, str]]) ->
     key_numbers = [x for x in facts if re.search(r"\d", x) or any(token in x for token in ("亿元", "亿美元", "万元", "%"))]
     auth_count = sum(1 for row in research_rows if _is_authoritative(row))
     deal_value = _fallback_deal_value(brief.deal_value, facts, research_rows)
+    buyer_rationale = _fallback_buyer_rationale(brief.buyer_motivation, brief, facts, research_rows)
     seller_rationale = _fallback_seller_rationale(brief.seller_motivation, facts, research_rows, deal_value)
     return FactPack(
         case_name=brief.case_name,
@@ -248,7 +267,7 @@ def _initial_fact_pack(brief: CaseBrief, research_rows: list[dict[str, str]]) ->
         target=brief.target or target,
         deal_value=deal_value,
         deal_status=brief.deal_status or ("已完成，" + brief.completed_year if brief.completed_year else ""),
-        buyer_rationale=brief.buyer_motivation,
+        buyer_rationale=buyer_rationale,
         seller_rationale=seller_rationale,
         financial_highlights=brief.financial_highlights,
         timeline=_clean_list(timeline, limit=8),
@@ -308,6 +327,7 @@ def build_fact_pack(brief: CaseBrief, research_rows: list[dict[str, str]]) -> Fa
 
     facts = extract_research_fact_lines(research_rows, limit=14)
     deal_value = _fallback_deal_value(str(data.get("deal_value") or initial.deal_value), facts, research_rows)
+    buyer_rationale = _fallback_buyer_rationale(str(data.get("buyer_rationale") or initial.buyer_rationale), brief, facts, research_rows)
     seller_rationale = _fallback_seller_rationale(str(data.get("seller_rationale") or initial.seller_rationale), facts, research_rows, deal_value)
     pack = FactPack(
         case_name=brief.case_name,
@@ -317,7 +337,7 @@ def build_fact_pack(brief: CaseBrief, research_rows: list[dict[str, str]]) -> Fa
         target=str(data.get("target") or initial.target),
         deal_value=deal_value,
         deal_status=str(data.get("deal_status") or initial.deal_status),
-        buyer_rationale=str(data.get("buyer_rationale") or initial.buyer_rationale),
+        buyer_rationale=buyer_rationale,
         seller_rationale=seller_rationale,
         financial_highlights=str(data.get("financial_highlights") or initial.financial_highlights),
         timeline=_clean_list(list(data.get("timeline") or []) + initial.timeline, limit=8),
