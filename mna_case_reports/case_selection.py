@@ -25,7 +25,7 @@ LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 VAGUE_PARTY_TERMS = (
     "未披露", "未知", "不详", "待定", "某标的", "标的资产", "标的公司", "相关资产", "部分资产",
-    "旗下资产", "金融资产", "相关股权", "受让方", "转让方",
+    "旗下资产", "金融资产", "相关股权", "受让方", "转让方", "未具名", "控股子公司",
 )
 PARTY_SUFFIX_RE = re.compile(
     r"(股份有限公司|有限责任公司|有限公司|控股集团|控股有限公司|控股|集团|公司|"
@@ -504,6 +504,13 @@ def latest_weekly_workbook(output_dir: Path) -> Path | None:
     return paths[-1] if paths else None
 
 
+def recent_weekly_workbooks(output_dir: Path, limit: int | None = None) -> list[Path]:
+    paths = sorted(output_dir.glob("并购案例一览_*.xlsx"), reverse=True)
+    if limit is None:
+        limit = int(os.getenv("REPORT_WEEKLY_WORKBOOK_LOOKBACK", "4"))
+    return paths[: max(limit, 1)]
+
+
 def _excel_bool_completed(status: str, remark: str, intro: str) -> bool:
     return has_completed_signal(" ".join([status, remark, intro]))
 
@@ -559,69 +566,79 @@ def _brief_from_weekly_excel_row(row: dict[str, object]) -> CaseBrief | None:
 
 
 def briefs_from_latest_weekly_workbook(output_dir: Path) -> list[CaseBrief]:
-    workbook_path = latest_weekly_workbook(output_dir)
-    if not workbook_path:
+    workbook_paths = recent_weekly_workbooks(output_dir)
+    if not workbook_paths:
         LOGGER.info("No weekly Excel workbook found under %s", output_dir)
         return []
-    try:
-        workbook = load_workbook(workbook_path, read_only=True, data_only=True)
-        sheet = workbook["周度并购案例"] if "周度并购案例" in workbook.sheetnames else workbook.active
-        rows = sheet.iter_rows(values_only=True)
-        headers = [clean_cell(value) for value in next(rows, [])]
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Failed to read weekly Excel workbook for report candidates: %s error=%s", workbook_path, exc)
-        return []
     briefs: list[CaseBrief] = []
-    for values in rows:
-        row = {headers[index]: value for index, value in enumerate(values) if index < len(headers)}
-        brief = _brief_from_weekly_excel_row(row)
-        if brief and brief.is_allowed_topic() and has_explicit_parties(brief) and not is_excluded_case(brief):
+    seen_keys: set[str] = set()
+    for workbook_path in workbook_paths:
+        try:
+            workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+            sheet = workbook["周度并购案例"] if "周度并购案例" in workbook.sheetnames else workbook.active
+            rows = sheet.iter_rows(values_only=True)
+            headers = [clean_cell(value) for value in next(rows, [])]
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to read weekly Excel workbook for report candidates: %s error=%s", workbook_path, exc)
+            continue
+        before = len(briefs)
+        for values in rows:
+            row = {headers[index]: value for index, value in enumerate(values) if index < len(headers)}
+            brief = _brief_from_weekly_excel_row(row)
+            if not brief or not brief.is_allowed_topic() or not has_explicit_parties(brief) or is_excluded_case(brief):
+                continue
+            keys = case_identity_keys(brief) or {brief.key()}
+            if keys_overlap(keys, seen_keys):
+                continue
+            seen_keys.update(keys)
             briefs.append(brief)
-    LOGGER.info("Loaded %s report candidates from latest weekly Excel: %s", len(briefs), workbook_path)
+        LOGGER.info("Loaded %s report candidates from weekly Excel: %s", len(briefs) - before, workbook_path)
+    LOGGER.info("Loaded %s report candidates from %s recent weekly Excel workbooks", len(briefs), len(workbook_paths))
     return briefs
 
 
 def raw_items_from_latest_weekly_workbook(output_dir: Path, max_items: int = 220) -> list[RawItem]:
-    workbook_path = latest_weekly_workbook(output_dir)
-    if not workbook_path:
+    workbook_paths = recent_weekly_workbooks(output_dir)
+    if not workbook_paths:
         return []
-    try:
-        workbook = load_workbook(workbook_path, read_only=True, data_only=True)
-        if "原始候选" not in workbook.sheetnames:
-            return []
-        sheet = workbook["原始候选"]
-        rows = sheet.iter_rows(values_only=True)
-        headers = [clean_cell(value) for value in next(rows, [])]
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Failed to read raw candidates from weekly Excel workbook: %s error=%s", workbook_path, exc)
-        return []
-
     raw_items: list[RawItem] = []
     seen: set[str] = set()
-    for values in rows:
-        row = {headers[index]: values[index] for index in range(min(len(headers), len(values)))}
-        title = clean_cell(row.get("标题"))
-        url = unwrap_news_url(clean_cell(row.get("URL")))
-        if not title or not is_usable_article_url(url):
+    for workbook_path in workbook_paths:
+        try:
+            workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+            if "原始候选" not in workbook.sheetnames:
+                continue
+            sheet = workbook["原始候选"]
+            rows = sheet.iter_rows(values_only=True)
+            headers = [clean_cell(value) for value in next(rows, [])]
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to read raw candidates from weekly Excel workbook: %s error=%s", workbook_path, exc)
             continue
-        item = RawItem(
-            title=title,
-            url=url,
-            source_name=clean_cell(row.get("来源名称")),
-            source_url="",
-            published_at=clean_cell(row.get("发布时间")),
-            summary=clean_cell(row.get("摘要")),
-            region_hint=clean_cell(row.get("地区")) or "中国",
-            query=clean_cell(row.get("查询词")),
-        )
-        key = item.stable_key()
-        if key in seen:
-            continue
-        seen.add(key)
-        raw_items.append(item)
-        if len(raw_items) >= max_items:
-            break
-    LOGGER.info("Loaded %s raw report candidates from latest weekly Excel: %s", len(raw_items), workbook_path)
+        for values in rows:
+            row = {headers[index]: values[index] for index in range(min(len(headers), len(values)))}
+            title = clean_cell(row.get("标题"))
+            url = unwrap_news_url(clean_cell(row.get("URL")))
+            if not title or not is_usable_article_url(url):
+                continue
+            item = RawItem(
+                title=title,
+                url=url,
+                source_name=clean_cell(row.get("来源名称")),
+                source_url="",
+                published_at=clean_cell(row.get("发布时间")),
+                summary=clean_cell(row.get("摘要")),
+                region_hint=clean_cell(row.get("地区")) or "中国",
+                query=clean_cell(row.get("查询词")),
+            )
+            key = item.stable_key()
+            if key in seen:
+                continue
+            seen.add(key)
+            raw_items.append(item)
+            if len(raw_items) >= max_items:
+                LOGGER.info("Loaded %s raw report candidates from %s recent weekly Excel workbooks", len(raw_items), len(workbook_paths))
+                return raw_items
+    LOGGER.info("Loaded %s raw report candidates from %s recent weekly Excel workbooks", len(raw_items), len(workbook_paths))
     return raw_items
 
 
