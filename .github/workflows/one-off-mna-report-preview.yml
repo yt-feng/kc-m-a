@@ -2,15 +2,12 @@ name: One-off M&A report preview
 # preview trigger: 2026-05-29T00:05:00+08:00
 
 on:
-  push:
-    paths:
-      - ".github/workflows/one-off-mna-report-preview.yml"
   workflow_dispatch:
     inputs:
       mode:
         description: "weekly or backfill"
         required: false
-        default: "backfill"
+        default: "weekly"
       count:
         description: "Number of reports to generate"
         required: false
@@ -39,7 +36,7 @@ jobs:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_MODEL: deepseek-v4-flash
-      REPORT_MODE: ${{ github.event.inputs.mode || 'backfill' }}
+      REPORT_MODE: ${{ github.event.inputs.mode || 'weekly' }}
       REPORT_COUNT: ${{ github.event.inputs.count || '1' }}
       REPORT_MIN_DOMESTIC: ${{ github.event.inputs.min_domestic || '1' }}
       REPORT_OFFSET: ${{ github.event.inputs.offset || '0' }}
