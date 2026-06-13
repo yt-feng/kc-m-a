@@ -390,3 +390,13 @@ commit：`62040c55439e07c74eceb75f3499233ec3b1c2e9`
 - Word 报告格式与选题规则已多轮修复
 - Excel hyperlink 已可点击，但“原始链接可打开”仍未彻底确认
 - 用户最新关注点：继续修 Excel URL，并重跑覆盖旧 Excel
+
+---
+
+## 12. 2026-06-14更新：当前闭环状态
+
+- Excel原始链接问题已继续修复：Google/Bing/搜狗包装链接、来源首页链接会在采集、DeepSeek结构化、Excel写入和报告选题读取阶段被过滤。
+- `Weekly M&A cases`已在GitHub Actions重跑并提交新Excel：`outputs/并购案例一览_20260606_20260613.xlsx`。
+- 已验证新Excel业务表（`周度并购案例`、`原始候选`）共686个URL/超链接目标：Google/Bing/搜狗包装链接为0，首页型链接为0，20个案例URL均非空。
+- 新增Excel链接防回归校验：后续周度Action会检查最新Excel业务表，若出现不可用URL或案例URL为空则失败。
+- `Weekly M&A case reports`的失败点已从坏链接转为选题预检过严：A股官方PDF案例的交易金额在PDF正文中，Excel结构化字段为`-`，原逻辑在研究抽取前即拒绝。已调整为官方PDF/交易所公告来源可进入研究阶段，后续事实包仍会严格校验金额、动机、数据和权威来源，不写模板兜底段落。

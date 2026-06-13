@@ -30,6 +30,20 @@ PARTY_SUFFIX_RE = re.compile(
     re.I,
 )
 PLACEHOLDER_TEXT = {"", "-", "无", "未知", "不详", "未披露", "n/a", "na", "none", "null"}
+OFFICIAL_SOURCE_DOMAINS = (
+    "cninfo.com.cn",
+    "static.cninfo.com.cn",
+    "sse.com.cn",
+    "szse.cn",
+    "bse.cn",
+    "neeq.com.cn",
+    "hkexnews.hk",
+    "sec.gov",
+    "samr.gov.cn",
+    "csrc.gov.cn",
+    "ndrc.gov.cn",
+    "mofcom.gov.cn",
+)
 DEAL_NUMBER_RE = re.compile(
     r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|％|亿元|亿美元|亿港元|万港元|万元|美元|港元|元|股|股份|股权|"
     r"crore|million|billion|bn|mn)?",
@@ -146,11 +160,25 @@ def has_usable_source_url(url: str | None) -> bool:
     return not is_placeholder(cleaned) and is_usable_article_url(cleaned)
 
 
+def is_authoritative_source_url(url: str | None) -> bool:
+    cleaned = unwrap_news_url(clean_cell(url))
+    if not has_usable_source_url(cleaned):
+        return False
+    parsed = re.match(r"^https?://([^/?#]+)([^?#]*)", cleaned, re.I)
+    if not parsed:
+        return False
+    host = parsed.group(1).lower().replace("www.", "")
+    path = (parsed.group(2) or "").lower()
+    return path.endswith(".pdf") or any(domain in host for domain in OFFICIAL_SOURCE_DOMAINS)
+
+
 def is_report_ready_candidate(brief: CaseBrief) -> bool:
     """Cheap preflight before spending minutes on research and model calls."""
     if not has_explicit_parties(brief):
         return False
     if not brief.is_completed and not has_completed_signal(brief.deal_status):
+        return False
+    if not has_usable_source_url(brief.source_url):
         return False
     evidence_text = "\n".join([
         brief.deal_value,
@@ -158,9 +186,7 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
         brief.source_title,
         brief.financial_highlights,
     ])
-    if not has_deal_value_signal(evidence_text):
-        return False
-    if not has_usable_source_url(brief.source_url):
+    if not has_deal_value_signal(evidence_text) and not is_authoritative_source_url(brief.source_url):
         return False
     return True
 
@@ -168,7 +194,8 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
 def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int, str]:
     completed_penalty = 0 if brief.is_completed or has_completed_signal(brief.deal_status) else 10
     url_penalty = 0 if has_usable_source_url(brief.source_url) else 8
-    deal_penalty = 0 if has_deal_value_signal("\n".join([brief.deal_value, brief.financial_highlights, brief.why, brief.source_title])) else 5
+    deal_signal = has_deal_value_signal("\n".join([brief.deal_value, brief.financial_highlights, brief.why, brief.source_title]))
+    deal_penalty = 0 if deal_signal else (2 if is_authoritative_source_url(brief.source_url) else 5)
     rationale_penalty = 0
     if len(clean_cell(brief.buyer_motivation or brief.why)) < 15:
         rationale_penalty += 1
