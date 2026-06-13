@@ -23,7 +23,10 @@ from .deepseek_client import chat_json
 
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
-VAGUE_PARTY_TERMS = ("未披露", "未知", "不详", "某标的", "标的资产", "标的公司", "相关资产", "部分资产")
+VAGUE_PARTY_TERMS = (
+    "未披露", "未知", "不详", "待定", "某标的", "标的资产", "标的公司", "相关资产", "部分资产",
+    "旗下资产", "金融资产", "相关股权", "受让方", "转让方",
+)
 PARTY_SUFFIX_RE = re.compile(
     r"(股份有限公司|有限责任公司|有限公司|控股集团|控股有限公司|控股|集团|公司|"
     r"corporation|inc\.?|limited|ltd\.?|plc|holdings?)",
@@ -87,7 +90,9 @@ class CaseBrief:
         return self.is_completed and self.completed_year in {"2025", "2026"}
 
     def is_allowed_topic(self) -> bool:
-        return self.is_recent_completed() or self.is_classic
+        if self.is_recent_completed() or self.is_classic:
+            return True
+        return self.completed_year in {"2025", "2026"} and is_authoritative_source_url(self.source_url)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -176,7 +181,7 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
     """Cheap preflight before spending minutes on research and model calls."""
     if not has_explicit_parties(brief):
         return False
-    if not brief.is_completed and not has_completed_signal(brief.deal_status):
+    if not brief.is_completed and not has_completed_signal(brief.deal_status) and not is_authoritative_source_url(brief.source_url):
         return False
     if not has_usable_source_url(brief.source_url):
         return False
