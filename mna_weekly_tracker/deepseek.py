@@ -13,7 +13,7 @@ import requests
 
 from .config import CATEGORIES, CATEGORY_GUIDE, OUTPUT_COLUMNS, chunked
 from .sources import RawItem, normalize_text
-from .sources_fixed import is_aggregator_url, unwrap_news_url
+from .sources_fixed import is_aggregator_url, is_likely_homepage_url, is_usable_article_url, unwrap_news_url
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -148,11 +148,83 @@ def normalize_case(row: dict[str, Any]) -> dict[str, str]:
             value = "-"
         normalized[col] = str(value).strip()
     normalized["URL"] = unwrap_news_url(normalized.get("URL", ""))
-    if is_aggregator_url(normalized["URL"]):
+    if is_aggregator_url(normalized["URL"]) or is_likely_homepage_url(normalized["URL"]):
         normalized["URL"] = "-"
     if normalized.get("案例分类") not in CATEGORIES:
         normalized["案例分类"] = infer_category_from_text(" ".join(normalized.values()))
     return normalized
+
+
+def compact_match_text(value: str | None) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", normalize_text(value or ""))
+
+
+def raw_item_match_text(item: RawItem) -> str:
+    return compact_match_text(f"{item.title} {item.summary} {item.source_name} {item.query}")
+
+
+def raw_item_host(item: RawItem) -> str:
+    match = re.match(r"https?://([^/]+)", unwrap_news_url(item.url or ""), re.I)
+    return match.group(1).lower().removeprefix("www.") if match else ""
+
+
+def source_host(url: str) -> str:
+    match = re.match(r"https?://([^/]+)", unwrap_news_url(url or ""), re.I)
+    return match.group(1).lower().removeprefix("www.") if match else ""
+
+
+def url_matches_raw_item(url: str, item: RawItem) -> bool:
+    left = unwrap_news_url(url or "").rstrip("/")
+    right = unwrap_news_url(item.url or "").rstrip("/")
+    return bool(left and right and left == right)
+
+
+def score_raw_item_for_case(row: dict[str, str], item: RawItem) -> int:
+    item_text = raw_item_match_text(item)
+    row_url = row.get("URL", "")
+    score = 0
+    if row_url and source_host(row_url) and source_host(row_url) == raw_item_host(item):
+        score += 6
+    source_name = compact_match_text(row.get("来源名称", ""))
+    item_source = compact_match_text(item.source_name)
+    if source_name and item_source and (source_name in item_source or item_source in source_name):
+        score += 3
+    for field in ("并购方", "目标方"):
+        party = compact_match_text(normalize_party(row.get(field)))
+        if len(party) >= 3 and party in item_text:
+            score += 5
+    description = compact_match_text(row.get("案例一句话简介", ""))
+    if description:
+        for token in re.findall(r"[a-z0-9]{4,}|[\u4e00-\u9fff]{2,}", normalize_text(row.get("案例一句话简介", ""))):
+            token_c = compact_match_text(token)
+            if len(token_c) >= 3 and token_c in item_text:
+                score += 1
+    return score
+
+
+def reconcile_case_urls(cases: list[dict[str, str]], batch: list[RawItem]) -> list[dict[str, str]]:
+    usable_items = [item for item in batch if is_usable_article_url(unwrap_news_url(item.url or ""))]
+    for row in cases:
+        row_url = unwrap_news_url(row.get("URL", ""))
+        if any(url_matches_raw_item(row_url, item) for item in usable_items):
+            row["URL"] = row_url
+            continue
+        best_item = None
+        best_score = 0
+        for item in usable_items:
+            score = score_raw_item_for_case(row, item)
+            if score > best_score:
+                best_item = item
+                best_score = score
+        if best_item and best_score >= 8:
+            row["URL"] = unwrap_news_url(best_item.url)
+            if not row.get("来源名称") or row.get("来源名称") == "-":
+                row["来源名称"] = best_item.source_name or "-"
+            if not row.get("发布日期") or row.get("发布日期") == "-":
+                row["发布日期"] = best_item.published_at or "-"
+            continue
+        row["URL"] = "-"
+    return cases
 
 
 def normalize_party(value: str | None) -> str:
@@ -269,6 +341,7 @@ def parse_deepseek_batch(batch: list[RawItem], start_label: str, end_label: str,
         if not isinstance(batch_cases, list):
             raise DeepSeekError(f"DeepSeek cases field is not a list: {parsed}")
         normalized = [normalize_case(row) for row in batch_cases if isinstance(row, dict)]
+        normalized = reconcile_case_urls(normalized, batch)
         return normalized[:MAX_CASES_PER_BATCH]
     except Exception as exc:  # noqa: BLE001
         raise DeepSeekError(f"DeepSeek batch {batch_index} failed: {exc}; content_prefix={content[:500]}") from exc

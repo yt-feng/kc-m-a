@@ -13,7 +13,7 @@ from openpyxl.worksheet.dimensions import ColumnDimension
 
 from .config import ALL_TRACKED_SOURCES, CATEGORIES, GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_QUERIES, OUTPUT_COLUMNS
 from .sources import RawItem
-from .sources_fixed import is_aggregator_url, unwrap_news_url
+from .sources_fixed import is_aggregator_url, is_likely_homepage_url, unwrap_news_url
 
 HEADER_FILL = "0B7D73"
 HEADER_FONT = "FFFFFF"
@@ -49,7 +49,7 @@ def first_url(value: object) -> str:
 
 def clean_url(value: object) -> str:
     url = unwrap_news_url(str(value or "").strip())
-    return "" if is_aggregator_url(url) else url
+    return "" if is_aggregator_url(url) or is_likely_homepage_url(url) else url
 
 
 def make_url_cell_clickable(cell) -> None:

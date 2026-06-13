@@ -92,13 +92,30 @@ def _url_host(url: str) -> str:
     return urllib.parse.urlsplit(url or "").netloc.lower()
 
 
+def is_likely_homepage_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(url or "")
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    path = (parsed.path or "").strip("/")
+    return path == "" or path.lower() in {"index.html", "index.htm", "index.php", "home"}
+
+
+def is_usable_article_url(url: str) -> bool:
+    return bool(url) and not is_aggregator_url(url) and not is_likely_homepage_url(url)
+
+
 def _first_query_url(url: str, names: tuple[str, ...]) -> str:
     parsed = urllib.parse.urlsplit(url or "")
     query = urllib.parse.parse_qs(parsed.query)
     for name in names:
         for value in query.get(name, []):
             value = urllib.parse.unquote(value or "").strip()
-            if value.startswith(("http://", "https://")):
+            if value.startswith(("http://", "https://")) and not is_likely_homepage_url(value):
                 return value
     return ""
 
@@ -115,7 +132,7 @@ def _decode_google_news_token(token: str) -> str:
     urls = re.findall(r"https?://[^\x00-\x20\"'<>]+", text)
     for candidate in urls:
         candidate = urllib.parse.unquote(candidate).strip()
-        if candidate and _url_host(candidate) not in GOOGLE_NEWS_HOSTS:
+        if candidate and _url_host(candidate) not in GOOGLE_NEWS_HOSTS and not is_likely_homepage_url(candidate):
             return candidate
     return ""
 
@@ -157,16 +174,19 @@ def unwrap_news_url(url: str, *, publisher_url: str = "") -> str:
 def resolve_news_link(link: str, *, title: str = "", publisher_url: str = "") -> str:
     global _TITLE_URL_RESOLVE_ATTEMPTS
     unwrapped = unwrap_news_url(link, publisher_url="")
-    if unwrapped and not is_aggregator_url(unwrapped):
+    if is_usable_article_url(unwrapped):
         return unwrapped
+    resolved = resolve_original_url(link)
+    if is_usable_article_url(resolved):
+        return resolved
     if title:
         cache_key = normalize_text(title)[:220]
         if cache_key in _TITLE_URL_RESOLVE_CACHE:
             cached = _TITLE_URL_RESOLVE_CACHE[cache_key]
-            return cached or (unwrapped if unwrapped and not is_aggregator_url(unwrapped) else "")
+            return cached or ""
         if _TITLE_URL_RESOLVE_ATTEMPTS >= MAX_TITLE_URL_RESOLVES:
             _TITLE_URL_RESOLVE_CACHE[cache_key] = ""
-            return unwrapped if unwrapped and not is_aggregator_url(unwrapped) else ""
+            return ""
         _TITLE_URL_RESOLVE_ATTEMPTS += 1
         try:
             for candidate in rss_items(
@@ -180,13 +200,13 @@ def resolve_news_link(link: str, *, title: str = "", publisher_url: str = "") ->
                 resolve_links=False,
             ):
                 candidate_url = unwrap_news_url(candidate.url, publisher_url="")
-                if candidate_url and not is_aggregator_url(candidate_url):
+                if is_usable_article_url(candidate_url):
                     _TITLE_URL_RESOLVE_CACHE[cache_key] = candidate_url
                     return candidate_url
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("News URL title resolution failed: title=%s error=%s", title[:120], exc)
         _TITLE_URL_RESOLVE_CACHE[cache_key] = ""
-    return unwrapped if unwrapped and not is_aggregator_url(unwrapped) else ""
+    return ""
 
 
 def strip_html(value: str | None) -> str:
@@ -309,7 +329,7 @@ def url_from_query_params(url: str) -> str:
     for key in ("url", "u", "q", "target", "to"):
         for value in params.get(key, []):
             candidate = urllib.parse.unquote(value).strip()
-            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate):
+            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate) and not is_likely_homepage_url(candidate):
                 return candidate
     return ""
 
@@ -320,11 +340,11 @@ def url_from_html(html_text: str) -> str:
         node = soup.select_one(selector)
         if node:
             candidate = (node.get(attr) or "").strip()
-            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate):
+            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate) and not is_likely_homepage_url(candidate):
                 return candidate
     for a in soup.select("a[href]"):
         candidate = urllib.parse.unquote(a.get("href") or "").strip()
-        if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate):
+        if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate) and not is_likely_homepage_url(candidate):
             return candidate
     return ""
 
@@ -347,7 +367,7 @@ def resolve_original_url(url: str) -> str:
     try:
         response = request_with_retries("GET", url, retries=0, timeout=8, allow_redirects=True)
         final_url = response.url or url
-        if final_url.startswith(("http://", "https://")) and not is_wrapper_url(final_url):
+        if final_url.startswith(("http://", "https://")) and not is_wrapper_url(final_url) and not is_likely_homepage_url(final_url):
             resolved = final_url
         else:
             html_candidate = url_from_html(response.text)
