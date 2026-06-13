@@ -19,6 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
+from mna_weekly_tracker.sources_fixed import unwrap_news_url
 from mna_weekly_tracker.sources_rich import fetch_bing_news, fetch_google_news
 
 from .case_selection import CaseBrief
@@ -220,7 +221,7 @@ def seed_research_item(brief: CaseBrief) -> ResearchItem:
     seed_text = "\n".join(seed_lines)
     return ResearchItem(
         title=brief.source_title or brief.case_name,
-        url=brief.source_url,
+        url=unwrap_news_url(brief.source_url),
         source_name="case_brief_structured_seed",
         published_at=brief.published_at,
         summary=seed_text,
@@ -267,7 +268,7 @@ def enrich_research_items(items: list[ResearchItem], brief: CaseBrief, *, max_fe
     return enriched
 
 
-def collect_research_context(brief: CaseBrief, *, lookback_days: int = 3650, limit: int = 36) -> list[ResearchItem]:
+def collect_research_context(brief: CaseBrief, *, lookback_days: int = 3650, limit: int = 36, expanded: bool = False) -> list[ResearchItem]:
     """Collect public snippets, full-page extracts, and PDF excerpts for a case."""
     end = datetime.now(BEIJING_TZ).replace(microsecond=0)
     start = end - timedelta(days=lookback_days)
@@ -282,16 +283,25 @@ def collect_research_context(brief: CaseBrief, *, lookback_days: int = 3650, lim
         f"{base} annual report revenue net income deal value",
         f"{base} filetype:pdf acquisition merger consideration financials",
     ]
+    if expanded:
+        queries.extend([
+            f"{brief.acquirer} {brief.target} 交易结构 估值 对价",
+            f"{brief.acquirer} {brief.target} 产业链 客户 产能 技术 订单",
+            f"{brief.acquirer} {brief.target} 管理层 留任 交割 整合",
+            f"{brief.acquirer} {brief.target} annual report investor presentation acquisition consideration",
+            f"{brief.acquirer} {brief.target} SEC filing HKEX announcement cninfo 重组报告书",
+        ])
     if brief.source_title:
         queries.append(brief.source_title)
 
     seen: set[str] = set()
     out: list[ResearchItem] = [seed_research_item(brief)]
     if brief.source_url:
-        seen.add(brief.source_url)
+        seen.add(unwrap_news_url(brief.source_url))
 
     for query in queries:
-        for item in fetch_bing_web_results(query, limit=6):
+        per_query_limit = 10 if expanded else 6
+        for item in fetch_bing_web_results(query, limit=per_query_limit):
             if item.url in seen:
                 continue
             seen.add(item.url)
@@ -309,7 +319,7 @@ def collect_research_context(brief: CaseBrief, *, lookback_days: int = 3650, lim
         if len(out) >= limit:
             break
 
-    enriched = enrich_research_items(out[:limit], brief, max_fetches=10)
+    enriched = enrich_research_items(out[:limit], brief, max_fetches=16 if expanded else 10)
     enriched.sort(key=lambda x: 0 if x.evidence_type in {"structured_seed", "pdf_extract", "page_extract"} else 1)
     LOGGER.info(
         "Research context ready: case=%s items=%s extracted=%s",

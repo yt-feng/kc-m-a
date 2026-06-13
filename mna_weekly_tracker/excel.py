@@ -13,6 +13,7 @@ from openpyxl.worksheet.dimensions import ColumnDimension
 
 from .config import ALL_TRACKED_SOURCES, CATEGORIES, GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_QUERIES, OUTPUT_COLUMNS
 from .sources import RawItem
+from .sources_fixed import is_aggregator_url, unwrap_news_url
 
 HEADER_FILL = "0B7D73"
 HEADER_FONT = "FFFFFF"
@@ -43,7 +44,12 @@ def first_url(value: object) -> str:
     if value is None:
         return ""
     match = URL_RE.search(str(value).strip())
-    return match.group(0).strip() if match else ""
+    return clean_url(match.group(0).strip()) if match else ""
+
+
+def clean_url(value: object) -> str:
+    url = unwrap_news_url(str(value or "").strip())
+    return "" if is_aggregator_url(url) else url
 
 
 def make_url_cell_clickable(cell) -> None:
@@ -54,7 +60,7 @@ def make_url_cell_clickable(cell) -> None:
     cell.font = Font(color=HYPERLINK_COLOR, underline="single")
 
 
-def apply_hyperlinks(ws, header_names: tuple[str, ...] = ("URL",)) -> None:
+def apply_url_hyperlinks(ws, header_names: tuple[str, ...] = ("URL",)) -> None:
     """Convert URL text columns into real Excel hyperlinks."""
     header_to_col = {str(cell.value or "").strip(): cell.column for cell in ws[1]}
     for header in header_names:
@@ -87,7 +93,6 @@ def style_sheet(ws) -> None:
         ws.column_dimensions[letter] = ColumnDimension(ws, index=letter, width=COLUMN_WIDTHS.get(letter, 18))
     for row_idx in range(1, ws.max_row + 1):
         ws.row_dimensions[row_idx].height = 44 if row_idx > 1 else 26
-    apply_hyperlinks(ws)
 
 
 def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors: list[str], *, start_label: str, end_label: str) -> Workbook:
@@ -96,8 +101,9 @@ def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors
     ws.title = "周度并购案例"
     ws.append(OUTPUT_COLUMNS)
     for idx, row in enumerate(cases, start=1):
-        ws.append([idx if col == "序号" else safe_cell(row.get(col, "-")) for col in OUTPUT_COLUMNS])
+        ws.append([idx if col == "序号" else safe_cell(clean_url(row.get(col, "")) if col == "URL" else row.get(col, "-")) for col in OUTPUT_COLUMNS])
     style_sheet(ws)
+    apply_url_hyperlinks(ws)
 
     meta = wb.create_sheet("运行摘要")
     meta_rows = [
@@ -139,12 +145,12 @@ def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors
     for row in sources.iter_rows():
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-    apply_hyperlinks(sources)
+    apply_url_hyperlinks(sources)
 
     raw = wb.create_sheet("原始候选")
     raw.append(["标题", "来源名称", "发布时间", "地区", "查询词", "URL", "摘要"])
     for item in raw_items:
-        raw.append([item.title, item.source_name, item.published_at, item.region_hint, item.query, item.url, item.summary])
+        raw.append([item.title, item.source_name, item.published_at, item.region_hint, item.query, clean_url(item.url), item.summary])
     for cell in raw[1]:
         cell.fill = PatternFill(fill_type="solid", fgColor=HEADER_FILL)
         cell.font = Font(color=HEADER_FONT, bold=True)
@@ -156,7 +162,7 @@ def build_workbook(cases: list[dict[str, str]], raw_items: list[RawItem], errors
     for row in raw.iter_rows():
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-    apply_hyperlinks(raw)
+    apply_url_hyperlinks(raw)
     return wb
 
 

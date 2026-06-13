@@ -14,6 +14,8 @@ import re
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+import base64
+import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -29,15 +31,22 @@ from .config import GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_BUYER_KEYWORDS, MI
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 USER_AGENT = "Mozilla/5.0 AppleWebKit/537.36 Chrome/124 Safari/537.36"
+GOOGLE_NEWS_HOSTS = {"news.google.com", "news.url.google.com"}
+BING_NEWS_HOSTS = {"www.bing.com", "bing.com", "cn.bing.com"}
 WRAPPER_HOSTS = (
     "news.google.com",
+    "news.url.google.com",
     "www.google.com",
     "google.com",
     "www.bing.com",
     "bing.com",
+    "cn.bing.com",
     "weixin.sogou.com",
 )
 URL_RESOLVE_CACHE: dict[str, str] = {}
+MAX_TITLE_URL_RESOLVES = int(os.getenv("MNA_MAX_TITLE_URL_RESOLVES", "60"))
+_TITLE_URL_RESOLVE_CACHE: dict[str, str] = {}
+_TITLE_URL_RESOLVE_ATTEMPTS = 0
 
 
 @dataclass
@@ -77,6 +86,114 @@ def normalize_url(value: str | None) -> str:
     parsed = urllib.parse.urlsplit(str(value).strip())
     query = [(k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True) if not k.lower().startswith("utm_")]
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc.lower(), parsed.path, urllib.parse.urlencode(query), ""))
+
+
+def _url_host(url: str) -> str:
+    return urllib.parse.urlsplit(url or "").netloc.lower()
+
+
+def _first_query_url(url: str, names: tuple[str, ...]) -> str:
+    parsed = urllib.parse.urlsplit(url or "")
+    query = urllib.parse.parse_qs(parsed.query)
+    for name in names:
+        for value in query.get(name, []):
+            value = urllib.parse.unquote(value or "").strip()
+            if value.startswith(("http://", "https://")):
+                return value
+    return ""
+
+
+def _decode_google_news_token(token: str) -> str:
+    token = urllib.parse.unquote(token or "").split("?", 1)[0].strip("/")
+    if not token:
+        return ""
+    try:
+        decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+    except Exception:  # noqa: BLE001
+        return ""
+    text = decoded.decode("latin-1", errors="ignore")
+    urls = re.findall(r"https?://[^\x00-\x20\"'<>]+", text)
+    for candidate in urls:
+        candidate = urllib.parse.unquote(candidate).strip()
+        if candidate and _url_host(candidate) not in GOOGLE_NEWS_HOSTS:
+            return candidate
+    return ""
+
+
+def is_aggregator_url(url: str) -> bool:
+    host = _url_host(url)
+    return host in GOOGLE_NEWS_HOSTS or (host in BING_NEWS_HOSTS and "news" in urllib.parse.urlsplit(url or "").path.lower())
+
+
+def unwrap_news_url(url: str, *, publisher_url: str = "") -> str:
+    """Return the publisher/original URL for known news aggregator links.
+
+    Google News RSS often stores the publisher article URL inside a base64-ish
+    article token. Bing News can expose the original link in query parameters.
+    Keeping the raw aggregator URLs makes the Excel links brittle or unusable,
+    so unwrap them before candidates enter the workbook/model pipeline.
+    """
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    direct = _first_query_url(url, ("url", "u", "target", "r"))
+    if direct:
+        return direct
+
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.netloc.lower()
+    if host in GOOGLE_NEWS_HOSTS and "/articles/" in parsed.path:
+        token = parsed.path.rsplit("/articles/", 1)[-1].split("/", 1)[0]
+        decoded = _decode_google_news_token(token)
+        if decoded:
+            return decoded
+    if host in BING_NEWS_HOSTS and "news" in parsed.path.lower():
+        direct = _first_query_url(url, ("url", "u"))
+        if direct:
+            return direct
+    if host in GOOGLE_NEWS_HOSTS and publisher_url:
+        # This is a last-resort fallback. Google RSS source@url is usually the
+        # publisher homepage rather than the article, but it is still preferable
+        # to a non-openable Google RSS article wrapper.
+        return publisher_url
+    return url
+
+
+def resolve_news_link(link: str, *, title: str = "", publisher_url: str = "") -> str:
+    global _TITLE_URL_RESOLVE_ATTEMPTS
+    unwrapped = unwrap_news_url(link, publisher_url="")
+    if unwrapped and not is_aggregator_url(unwrapped):
+        return unwrapped
+    if title:
+        cache_key = normalize_text(title)[:220]
+        if cache_key in _TITLE_URL_RESOLVE_CACHE:
+            cached = _TITLE_URL_RESOLVE_CACHE[cache_key]
+            return cached or publisher_url or unwrapped or link
+        if _TITLE_URL_RESOLVE_ATTEMPTS >= MAX_TITLE_URL_RESOLVES:
+            _TITLE_URL_RESOLVE_CACHE[cache_key] = ""
+            return publisher_url or unwrapped or link
+        _TITLE_URL_RESOLVE_ATTEMPTS += 1
+        try:
+            for candidate in rss_items(
+                bing_news_url(title),
+                title,
+                datetime.now(BEIJING_TZ) - timedelta(days=30),
+                datetime.now(BEIJING_TZ) + timedelta(days=1),
+                source_name="Bing News - URL resolver",
+                source_url="https://www.bing.com/news/search",
+                region_hint="全球",
+                resolve_links=False,
+            ):
+                candidate_url = unwrap_news_url(candidate.url, publisher_url="")
+                if candidate_url and not is_aggregator_url(candidate_url):
+                    _TITLE_URL_RESOLVE_CACHE[cache_key] = candidate_url
+                    return candidate_url
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("News URL title resolution failed: title=%s error=%s", title[:120], exc)
+        _TITLE_URL_RESOLVE_CACHE[cache_key] = ""
+    if publisher_url:
+        return publisher_url
+    return unwrapped or link
 
 
 def strip_html(value: str | None) -> str:
@@ -290,7 +407,7 @@ def fetch_cninfo(source: SourceConfig, start: datetime, end: datetime, page_size
     return results
 
 
-def rss_items(url: str, query: str, start: datetime, end: datetime, *, source_name: str, source_url: str, region_hint: str) -> list[RawItem]:
+def rss_items(url: str, query: str, start: datetime, end: datetime, *, source_name: str, source_url: str, region_hint: str, resolve_links: bool = True) -> list[RawItem]:
     try:
         response = request_with_retries("GET", url, retries=1, timeout=15)
     except Exception as exc:  # noqa: BLE001
@@ -309,8 +426,11 @@ def rss_items(url: str, query: str, start: datetime, end: datetime, *, source_na
     for entry in root.findall("./channel/item"):
         title = strip_html(entry.findtext("title") or "")
         link = entry.findtext("link") or ""
+        publisher_node = entry.find("source")
+        publisher_url = publisher_node.attrib.get("url", "") if publisher_node is not None else ""
         summary = strip_html(entry.findtext("description") or "")
         publisher = strip_html(entry.findtext("source") or "")
+        link = resolve_news_link(link, title=title, publisher_url=publisher_url) if resolve_links else unwrap_news_url(link, publisher_url=publisher_url)
         pub_date = entry.findtext("pubDate") or ""
         published = ""
         if pub_date:

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from mna_weekly_tracker.sources_fixed import is_aggregator_url, unwrap_news_url
 from mna_weekly_tracker.sources_rich import RawItem, fetch_all_candidates
 
 from .case_pool import EXTENDED_CASE_POOL
@@ -21,6 +22,11 @@ from .deepseek_client import chat_json
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 VAGUE_PARTY_TERMS = ("未披露", "未知", "不详", "某标的", "标的资产", "标的公司", "相关资产", "部分资产")
+PARTY_SUFFIX_RE = re.compile(
+    r"(股份有限公司|有限责任公司|有限公司|控股集团|控股有限公司|控股|集团|公司|"
+    r"corporation|inc\.?|limited|ltd\.?|plc|holdings?)",
+    re.I,
+)
 
 
 @dataclass
@@ -46,6 +52,9 @@ class CaseBrief:
 
     def key(self) -> str:
         return f"{self.case_name}|{self.category}".lower().strip()
+
+    def identity_key(self) -> str:
+        return case_identity_key(self)
 
     def is_recent_completed(self) -> bool:
         return self.is_completed and self.completed_year in {"2025", "2026"}
@@ -93,6 +102,96 @@ def is_vague_party(value: str) -> bool:
     if len(text) < 2:
         return True
     return any(term in text for term in VAGUE_PARTY_TERMS)
+
+
+def normalize_identity_part(value: str | None) -> str:
+    text = (value or "").lower().strip()
+    text = re.sub(r"（.*?）|\(.*?\)", "", text)
+    text = PARTY_SUFFIX_RE.sub("", text)
+    text = re.sub(r"[\s·・,，.。:：;；/\\|&＋+_-]+", "", text)
+    if not text or is_vague_party(text):
+        return ""
+    return text
+
+
+def identity_part_matches(left: str, right: str) -> bool:
+    left = normalize_identity_part(left)
+    right = normalize_identity_part(right)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if len(left) >= 3 and len(right) >= 3 and (left in right or right in left):
+        return True
+    return False
+
+
+def normalize_case_name_for_identity(value: str | None) -> str:
+    text = (value or "").lower().strip()
+    text = re.sub(r"^(?:weekly|backfill)_\d{8}_\d{6}_", "", text)
+    text = re.split(r"[:：]", text, maxsplit=1)[0]
+    text = re.sub(r"20\d{2}[年/-]?\d{0,2}[月/-]?\d{0,2}日?", "", text)
+    text = re.sub(r"\d+(?:,\d{3})*(?:\.\d+)?(?:亿元|亿美元|亿港元|万元|美元|港元|元|%|％|股|股份|股权)?", "", text)
+    text = re.sub(r"(交易复盘|案例分析|并购案例|交易启示|交易观察|并购启示|案例研究|事实复盘)", "", text)
+    text = re.sub(r"\W+", "", text)
+    return text[:80]
+
+
+def case_identity_key(brief: CaseBrief) -> str:
+    case_name = re.sub(r"^(?:weekly|backfill)_\d{8}_\d{6}_", "", brief.case_name or "")
+    case_name_core = re.split(r"[:：]", case_name, maxsplit=1)[0]
+    inferred_a, inferred_t = infer_parties_from_name(case_name_core)
+    acquirer = normalize_identity_part(brief.acquirer or inferred_a)
+    target = normalize_identity_part(brief.target or inferred_t)
+    if acquirer and target:
+        return f"party:{acquirer}->{target}"
+    name_key = normalize_case_name_for_identity(case_name_core)
+    return f"name:{name_key}" if name_key else ""
+
+
+def case_identity_keys(brief: CaseBrief) -> set[str]:
+    case_name = re.sub(r"^(?:weekly|backfill)_\d{8}_\d{6}_", "", brief.case_name or "")
+    case_name_core = re.split(r"[:：]", case_name, maxsplit=1)[0]
+    inferred_a, inferred_t = infer_parties_from_name(case_name_core)
+    acquirer = normalize_identity_part(brief.acquirer or inferred_a)
+    target = normalize_identity_part(brief.target or inferred_t)
+    keys: set[str] = set()
+    if acquirer and target:
+        keys.add(f"party:{acquirer}->{target}")
+    name_key = normalize_case_name_for_identity(case_name_core)
+    if name_key:
+        keys.add(f"name:{name_key}")
+    return keys
+
+
+def case_key_matches(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    left_kind, _, left_value = left.partition(":")
+    right_kind, _, right_value = right.partition(":")
+    if left_kind != right_kind:
+        return False
+    if left_kind == "party":
+        left_a, _, left_t = left_value.partition("->")
+        right_a, _, right_t = right_value.partition("->")
+        return identity_part_matches(left_a, right_a) and identity_part_matches(left_t, right_t)
+    if left_kind == "name":
+        return len(left_value) >= 6 and len(right_value) >= 6 and (left_value in right_value or right_value in left_value)
+    return False
+
+
+def key_in_history(key: str, historical_keys: set[str]) -> bool:
+    return any(case_key_matches(key, old_key) for old_key in historical_keys)
+
+
+def any_key_in_history(keys: set[str], historical_keys: set[str]) -> bool:
+    return any(key_in_history(key, historical_keys) for key in keys)
+
+
+def keys_overlap(left: set[str], right: set[str]) -> bool:
+    return any(case_key_matches(left_key, right_key) for left_key in left for right_key in right)
 
 
 def has_explicit_parties(brief: CaseBrief) -> bool:
@@ -163,6 +262,41 @@ def existing_counts(report_root: Path) -> Counter[str]:
     return counts
 
 
+def historical_case_keys(report_root: Path) -> set[str]:
+    keys: set[str] = set()
+    if not report_root.exists():
+        return keys
+    for manifest in report_root.glob("_manifests/*.json"):
+        if manifest.name.startswith("docx_format_validation_"):
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        rows = data if isinstance(data, list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            case_name = str(row.get("case_name") or "").strip()
+            if not case_name:
+                continue
+            inferred_a, inferred_t = infer_parties_from_name(case_name)
+            brief = CaseBrief(
+                case_name=case_name,
+                category=safe_category(row.get("category")),
+                region=str(row.get("region") or ""),
+                acquirer=str(row.get("acquirer") or inferred_a),
+                target=str(row.get("target") or inferred_t),
+            )
+            keys.update(case_identity_keys(brief))
+    for path in report_root.rglob("*.docx"):
+        stem = re.sub(r"^(?:weekly|backfill)_\d{8}_\d{6}_", "", path.stem)
+        stem = re.split(r"[:：]", stem, maxsplit=1)[0]
+        inferred_a, inferred_t = infer_parties_from_name(stem)
+        keys.update(case_identity_keys(CaseBrief(case_name=stem, category="", region="", acquirer=inferred_a, target=inferred_t)))
+    return keys
+
+
 def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False) -> list[CaseBrief]:
     briefs: list[CaseBrief] = []
     for row in rows:
@@ -178,12 +312,15 @@ def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False)
             is_classic = default_classic or completed_year not in {"2025", "2026"}
         else:
             is_classic = str(is_classic_raw).lower() == "true"
+        source_url = unwrap_news_url(str(row.get("source_url") or ""))
+        if is_aggregator_url(source_url):
+            source_url = ""
         brief = CaseBrief(
             case_name=case_name,
             category=safe_category(row.get("category")),
             region=region,
             source_title=str(row.get("source_title") or case_name),
-            source_url=str(row.get("source_url") or ""),
+            source_url=source_url,
             published_at=str(row.get("published_at") or ""),
             why=str(row.get("why") or "经典或代表性并购案例。"),
             is_domestic=is_domestic_region(region),
@@ -234,6 +371,7 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
         prompt_parts.append(f"不要选择包含这些主体或关键词的案例：{exclude}。")
     prompt_parts.extend([
         f"最多输出 {target_count} 个。分类只能用：{json.dumps(CATEGORIES, ensure_ascii=False)}。",
+        "source_url必须使用候选里的原始公告/媒体链接，不得使用news.google.com、news.google.com/rss/articles、bing.com/news/apiclick等聚合跳转链接；无法确认原文链接时留空。",
         "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false,\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_motivation\":...,\"seller_motivation\":...,\"financial_highlights\":...}]}。",
         f"候选：{json.dumps(sample, ensure_ascii=False)}",
     ])
@@ -258,15 +396,15 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
 
 
 def dedupe_briefs(briefs: list[CaseBrief]) -> list[CaseBrief]:
-    seen: set[str] = set()
+    seen_keys: set[str] = set()
     out: list[CaseBrief] = []
     for brief in briefs:
         if not brief.is_allowed_topic() or not has_explicit_parties(brief) or is_excluded_case(brief):
             continue
-        key = brief.key()
-        if key in seen:
+        keys = case_identity_keys(brief) or {brief.key()}
+        if keys_overlap(keys, seen_keys):
             continue
-        seen.add(key)
+        seen_keys.update(keys)
         out.append(brief)
     return out
 
@@ -289,6 +427,10 @@ def discover_backfill_cases(target_count: int) -> list[CaseBrief]:
 
 def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: int = 2, report_root: Path) -> list[CaseBrief]:
     deduped = dedupe_briefs(briefs)
+    historical_keys = historical_case_keys(report_root)
+    before_history_filter = len(deduped)
+    deduped = [brief for brief in deduped if not any_key_in_history(case_identity_keys(brief), historical_keys)]
+    LOGGER.info("Historical duplicate filter: before=%s after=%s report_root=%s", before_history_filter, len(deduped), report_root)
     counts = existing_counts(report_root)
     selected: list[CaseBrief] = []
     selected_keys: set[str] = set()
@@ -306,27 +448,27 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
     for category in sorted(CATEGORIES, key=lambda c: counts[c] + (2 if c == "SPAC" else 0)):
         if len(selected) >= count:
             break
-        category_candidates = [b for b in deduped if b.category == category and b.key() not in selected_keys]
+        category_candidates = [b for b in deduped if b.category == category and not keys_overlap(case_identity_keys(b) or {b.key()}, selected_keys)]
         if not category_candidates:
             continue
         brief = sorted(category_candidates, key=score)[0]
         selected.append(brief)
-        selected_keys.add(brief.key())
+        selected_keys.update(case_identity_keys(brief) or {brief.key()})
         selected_category_counts[brief.category] += 1
         counts[brief.category] += 1
 
     # Second pass: fill any remaining slots, still penalizing categories already selected in this run.
-    for brief in sorted([b for b in deduped if b.key() not in selected_keys], key=score):
+    for brief in sorted([b for b in deduped if not keys_overlap(case_identity_keys(b) or {b.key()}, selected_keys)], key=score):
         if len(selected) >= count:
             break
         selected.append(brief)
-        selected_keys.add(brief.key())
+        selected_keys.update(case_identity_keys(brief) or {brief.key()})
         selected_category_counts[brief.category] += 1
         counts[brief.category] += 1
 
     domestic_now = sum(1 for x in selected if x.is_domestic)
     if domestic_now < min_domestic:
-        for brief in sorted([b for b in deduped if b.is_domestic and b.key() not in selected_keys], key=score):
+        for brief in sorted([b for b in deduped if b.is_domestic and not keys_overlap(case_identity_keys(b) or {b.key()}, selected_keys)], key=score):
             if domestic_now >= min_domestic:
                 break
             replace_indexes = sorted(
@@ -339,9 +481,9 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
             idx = replace_indexes[0]
             old = selected[idx]
             selected_category_counts[old.category] -= 1
-            selected_keys.discard(old.key())
+            selected_keys.difference_update(case_identity_keys(old) or {old.key()})
             selected[idx] = brief
-            selected_keys.add(brief.key())
+            selected_keys.update(case_identity_keys(brief) or {brief.key()})
             selected_category_counts[brief.category] += 1
             domestic_now = sum(1 for x in selected if x.is_domestic)
 

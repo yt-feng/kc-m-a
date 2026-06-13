@@ -9,7 +9,10 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .deepseek import structure_cases
+from openpyxl import load_workbook
+
+from .config import OUTPUT_COLUMNS
+from .deepseek import case_identities, case_identity, identities_overlap, structure_cases
 from .excel import build_workbook, save_workbook
 from .sources_rich import RawItem, fetch_all_candidates, week_window
 
@@ -32,6 +35,46 @@ def date_label(dt: datetime) -> str:
 def parse_raw_json(path: str | Path) -> list[RawItem]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return [RawItem(**row) for row in data]
+
+
+def load_previous_case_identities(output_dir: Path, *, current_output: Path | None = None) -> set[str]:
+    identities: set[str] = set()
+    for workbook_path in sorted(output_dir.glob("并购案例一览_*.xlsx")):
+        if current_output and workbook_path.resolve() == current_output.resolve():
+            continue
+        try:
+            wb = load_workbook(workbook_path, read_only=True, data_only=True)
+            ws = wb["周度并购案例"] if "周度并购案例" in wb.sheetnames else wb.active
+            rows = ws.iter_rows(values_only=True)
+            headers = [str(x or "") for x in next(rows, [])]
+            header_map = {name: idx for idx, name in enumerate(headers)}
+            for values in rows:
+                row = {
+                    col: str(values[header_map[col]] or "")
+                    for col in OUTPUT_COLUMNS
+                    if col in header_map and header_map[col] < len(values)
+                }
+                identities.update(case_identities(row))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to read previous workbook for duplicate filtering: %s error=%s", workbook_path, exc)
+    return identities
+
+
+def filter_previous_cases(cases: list[dict[str, str]], previous_identities: set[str]) -> list[dict[str, str]]:
+    if not previous_identities:
+        return cases
+    filtered: list[dict[str, str]] = []
+    skipped = 0
+    for row in cases:
+        identity = case_identity(row)
+        identities = case_identities(row)
+        if identities and identities_overlap(identities, previous_identities):
+            skipped += 1
+            LOGGER.info("Skipping previously exported case: %s -> %s", row.get("并购方", "-"), row.get("目标方", "-"))
+            continue
+        filtered.append(row)
+    LOGGER.info("Filtered %s previously exported cases from weekly Excel output", skipped)
+    return filtered
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,10 +103,12 @@ def main() -> None:
         raw_items, errors = fetch_all_candidates(start, end, max_items=args.max_raw_items)
     LOGGER.info("Collected %s raw candidates", len(raw_items))
     cases = structure_cases(raw_items, start_label=start_label, end_label=end_label, max_cases=args.max_cases)
-    LOGGER.info("Structured %s cases", len(cases))
     output_dir = Path(args.output_dir)
     filename = f"并购案例一览_{date_label(start)}_{date_label(end)}.xlsx"
     output_path = output_dir / filename
+    previous_identities = load_previous_case_identities(output_dir, current_output=output_path)
+    cases = filter_previous_cases(cases, previous_identities)
+    LOGGER.info("Structured %s cases", len(cases))
     wb = build_workbook(cases, raw_items, errors, start_label=start_label, end_label=end_label)
     save_workbook(wb, output_path)
     LOGGER.info("Wrote %s", output_path)

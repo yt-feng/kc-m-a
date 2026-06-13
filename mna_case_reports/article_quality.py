@@ -44,6 +44,9 @@ GENERIC_CONCLUSION_PHRASES = (
     "值得长期关注",
     "只有真正整合才能释放价值",
     "对企业具有重要启示",
+    "为同类交易提供了借鉴",
+    "具有参考意义",
+    "未来仍需观察",
 )
 
 INDUSTRY_TERMS = (
@@ -96,6 +99,10 @@ def _last_section_text(article: dict[str, object]) -> str:
 
 def _count_terms(text: str, terms: tuple[str, ...]) -> int:
     return sum(1 for term in terms if term in text)
+
+
+def _has_causal_analysis(text: str) -> bool:
+    return any(token in text for token in ("原因在于", "这意味着", "其约束在于", "真正关键", "底层逻辑", "对应的是", "不是", "而是", "因此", "从而"))
 
 
 def _template_heading_count(headings: list[str]) -> int:
@@ -166,6 +173,8 @@ def assess_quality(article: dict[str, object]) -> list[str]:
         depth_categories += 1
     if depth_categories < 3:
         issues.append("分析深度不足：需要同时展开至少三个层面，例如产业判断、交易结构、财务影响、交割承接或并购方法论意义。")
+    if _count_terms(text, INDUSTRY_TERMS) < 5 or _count_terms(text, STRUCTURE_TERMS) < 6 or _count_terms(text, METHODOLOGY_TERMS) < 4:
+        issues.append("产业判断、交易结构分析和并购方法论意义没有写足，需要围绕本案事实展开，而不是只描述交易过程。")
 
     long_paragraphs = [p for p in paragraphs if len(re.sub(r"\s+", "", p)) >= 260]
     if len(long_paragraphs) < 4:
@@ -176,11 +185,15 @@ def assess_quality(article: dict[str, object]) -> list[str]:
 
     if not any(term in text for term in ("产业链", "行业", "竞争格局", "客户结构", "技术路线", "商业模式", "资源禀赋", "产业位置")):
         issues.append("缺少产业层面的判断，需要结合标的所处行业、客户/产品/资源位置或竞争格局解释交易意义。")
+    if not _has_causal_analysis(text):
+        issues.append("文章缺少因果分析和判断句，需要解释为什么这些交易事实会影响估值、条款、交割或整合结果。")
 
     last_text = _last_section_text(article)
     if any(phrase in last_text for phrase in GENERIC_CONCLUSION_PHRASES):
         issues.append("结语出现泛泛表达，需要紧扣本案例的交易双方、对价结构、业务承接和披露事实，而不是通用口号。")
     if last_text and _count_terms(last_text, STRUCTURE_TERMS + METHODOLOGY_TERMS + FINANCIAL_TERMS + INDUSTRY_TERMS) < 5:
         issues.append("结语/启示深度不足，需要回到本案例的交易结构、财务数据、产业位置、交割承接或方法论意义。")
+    if last_text and not _has_causal_analysis(last_text):
+        issues.append("结语缺少判断和解释力，需要说明本案事实如何推导出同类并购的方法论启示。")
 
     return issues

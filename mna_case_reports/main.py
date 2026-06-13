@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .case_selection import choose_balanced, candidates_from_weekly, discover_backfill_cases, save_manifest, seed_briefs, summarize_raw_items
+from .case_selection import choose_balanced, candidates_from_weekly, discover_backfill_cases, extended_pool_briefs, save_manifest, seed_briefs, summarize_raw_items
 from .config import CATEGORY_FOLDER_NAMES, CATEGORIES
 from .docx_writer import write_docx
 from .report_generation import generate_article
@@ -61,6 +61,7 @@ def main() -> None:
         LOGGER.info("Collecting weekly report candidates")
         raw_items = candidates_from_weekly(args.days, args.max_raw_items)
         briefs = summarize_raw_items(raw_items, target_count=max(args.count * 3, 12))
+        briefs.extend(extended_pool_briefs())
         briefs.extend(seed_briefs())
 
     selected_all = choose_balanced(briefs, count=args.offset + args.count, min_domestic=args.min_domestic, report_root=output_root)

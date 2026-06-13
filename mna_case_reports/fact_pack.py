@@ -113,9 +113,8 @@ def _analysis_angles(brief: CaseBrief, facts: list[str]) -> list[str]:
         angles.append("收入、利润、现金流和财务影响")
     if any(token in text for token in ("整合", "协同", "人员", "管理", "治理", "承接")):
         angles.append("交割后的组织、业务和管理承接")
-    if not angles:
-        angles = ["交易事实、资产质量、价格安排和交割承接的连续复盘"]
-    angles.append("对同类并购的资料核验和执行方法论意义")
+    if angles:
+        angles.append("对同类并购的资料核验和执行方法论意义")
     return _clean_list(angles, limit=6)
 
 
@@ -131,11 +130,11 @@ def _initial_fact_pack(brief: CaseBrief, research_rows: list[dict[str, str]]) ->
         region=brief.region,
         acquirer=brief.acquirer or acquirer,
         target=brief.target or target,
-        deal_value=brief.deal_value or "公开资料未披露统一口径的完整金额",
-        deal_status=brief.deal_status or ("已完成，" + brief.completed_year if brief.completed_year else "公开资料披露了交易进展"),
-        buyer_rationale=brief.buyer_motivation or "公开资料显示，收购方围绕业务协同、能力补强、资产控制或上市平台整合推进交易。",
-        seller_rationale=brief.seller_motivation or "公开资料显示，出售方或被整合方接受交易安排，与股权转让、资源承接、平台整合或资本化路径有关。",
-        financial_highlights=brief.financial_highlights or "公开资料披露的经营数据需要与公告、年报和交割文件交叉核验。",
+        deal_value=brief.deal_value,
+        deal_status=brief.deal_status or ("已完成，" + brief.completed_year if brief.completed_year else ""),
+        buyer_rationale=brief.buyer_motivation,
+        seller_rationale=brief.seller_motivation,
+        financial_highlights=brief.financial_highlights,
         timeline=_clean_list(timeline, limit=8),
         key_numbers=_clean_list(key_numbers, limit=12),
         source_titles=_source_titles(research_rows),
@@ -177,8 +176,8 @@ def build_fact_pack(brief: CaseBrief, research_rows: list[dict[str, str]]) -> Fa
             {
                 "role": "user",
                 "content": (
-                    "请从资料线索中抽取并购案例事实包。不要写正文。资料没有披露的字段保留为空或写'公开资料未披露'。"
-                    "必须区分事实与分析：事实字段只能来自公开资料；analysis_angles只写可从事实包展开的分析角度。"
+                    "请从资料线索中抽取并购案例事实包。不要写正文。资料没有披露的字段保留为空或写'公开资料未披露'，不得用行业通用解释补字段。"
+                    "必须区分事实与分析：事实字段只能来自公开资料；analysis_angles只写可从事实包展开的分析角度，不能写通用并购方法论。"
                     "输出JSON格式：{\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_rationale\":...,\"seller_rationale\":...,\"financial_highlights\":...,\"timeline\":[...],\"key_numbers\":[...],\"analysis_angles\":[...]}。"
                     f"\n已知案例：{json.dumps(initial.to_dict(), ensure_ascii=False)}"
                     f"\n资料线索：{json.dumps(payload_rows, ensure_ascii=False)}"

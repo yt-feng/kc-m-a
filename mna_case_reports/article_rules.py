@@ -7,7 +7,7 @@ from typing import Any
 
 from .case_selection import CaseBrief
 
-MIN_CHARS = 3501
+MIN_CHARS = 3500
 TARGET_MIN_CHARS = 3600
 TARGET_MAX_CHARS = 3900
 MAX_CHARS = 4000
@@ -20,6 +20,16 @@ BANNED_AUDIENCE_PATTERNS = (
     "对CEO而言", "对董事长而言", "对上市公司管理者而言", "读者是", "面向上市公司",
 )
 GENERIC_HEADINGS = ("交易过程", "交易逻辑", "可复用经验", "结论", "经验启示", "案例启示")
+GENERIC_CONCLUSION_PHRASES = (
+    "并购不是终点",
+    "整合才是开始",
+    "协同不是口号",
+    "时间会给出答案",
+    "值得长期关注",
+    "只有真正整合才能释放价值",
+    "对企业具有重要启示",
+    "为同类交易提供了借鉴",
+)
 HEADING_THINKING_PATTERNS = (
     "交易动机", "交易背景", "并购战略考量", "标的筛选", "交易结构设计", "并购后整合", "价值释放",
     "买方动机", "卖方动机", "投后整合",
@@ -143,9 +153,17 @@ def _format_number_with_commas(match: re.Match[str]) -> str:
     return f"{int(raw):,}"
 
 
+QUANTITY_UNITS = (
+    "元", "美元", "港元", "欧元", "人民币", "万元", "亿元", "亿美元", "亿港元", "亿欧元", "万欧元",
+    "股", "万股", "亿股", "人", "名", "户", "家", "个", "项", "台", "辆", "吨", "平方米", "平方英尺",
+    "MW", "GW", "GWh", "MWh", "million", "billion", "bn", "mn",
+)
+QUANTITY_UNIT_RE = "|".join(re.escape(unit) for unit in sorted(QUANTITY_UNITS, key=len, reverse=True))
+UNFORMATTED_QUANTITY_RE = re.compile(rf"(?<![\d.,])\d{{4,}}(?![\d.,])(?=\s*(?:{QUANTITY_UNIT_RE}))")
+
+
 def format_thousands(text: str) -> str:
-    units = r"元|美元|港元|人民币|股|人|吨|万元|亿元|亿美元|万股|亿股|万|亿"
-    text = re.sub(rf"(?<![\d.,])\d{{5,}}(?=\s*(?:{units}))", _format_number_with_commas, text)
+    text = UNFORMATTED_QUANTITY_RE.sub(_format_number_with_commas, text)
     return text
 
 
@@ -158,48 +176,11 @@ def normalize_text(text: str) -> str:
 
 
 def ensure_title(article: dict[str, object], brief: CaseBrief) -> None:
-    title = normalize_text(str(article.get("title") or brief.case_name or "并购案例研究").strip())
-    acquirer, target = party_names_for_title(brief)
-    if "：" not in title and ":" not in title:
-        title = f"{title}：交易复盘"
-    missing_acquirer = acquirer and not name_in_text(acquirer, title)
-    missing_target = target and not name_in_text(target, title)
-    if missing_acquirer or missing_target:
-        title = f"{acquirer or '收购方'}收购{target or '标的'}：交易复盘"
-    if title_length(title) > 36 and acquirer and target:
-        title = f"{acquirer}收购{target}：交易复盘"
-    article["title"] = normalize_text(title)
+    article["title"] = normalize_text(str(article.get("title") or "").strip())
 
 
 def improve_heading_text(body: str, *, is_last: bool = False) -> str:
-    body = re.sub(r"^结语[:：]?", "", body).strip()
-    replacements = {
-        "交易动机": "双方披露的交易出发点",
-        "交易背景": "交易启动前的业务与时间线",
-        "并购战略考量": "收购方业务边界与资产承接条件",
-        "标的筛选": "标的资产、客户与财务质量核验",
-        "交易结构设计": "价格、支付方式与交割条件安排",
-        "并购后整合": "交割后的治理、业务与人员承接",
-        "价值释放": "收入、利润与协同事项的后续观察",
-        "买方动机": "收购方披露的购买理由",
-        "卖方动机": "出售方披露的接受安排原因",
-        "投后整合": "交割后的治理和业务承接",
-        "窗口期如何打开": "交易启动前的业务与时间线",
-        "用条款把不确定性前置": "价格、支付方式与交割条件安排",
-        "交割后的第一件事是接住能力": "交割后的治理、业务与人员承接",
-        "为何此时走到一起": "双方披露的交易出发点",
-        "资产质量先于规模想象": "标的资产、客户与财务质量核验",
-        "产业位置决定出手方式": "收购方业务边界与资产承接条件",
-        "买方为何选择此时出手": "收购方披露的购买理由",
-        "出售方为何接受安排": "出售方披露的接受安排原因",
-        "交割后从持有转向经营": "交割后的治理和业务承接",
-    }
-    for old, new in replacements.items():
-        body = body.replace(old, new)
-    body = normalize_text(body.strip(" ：:"))
-    if not body:
-        return "从公开事实回到执行关注点" if is_last else "关键事实与交易进程"
-    return body
+    return normalize_text(body.strip(" ：:"))
 
 
 def ensure_sections(article: dict[str, object]) -> None:
@@ -216,17 +197,12 @@ def ensure_sections(article: dict[str, object]) -> None:
             clean_paras = [normalize_text(str(p)) for p in paragraphs if str(p).strip()]
             if heading and clean_paras:
                 normalized.append({"heading": heading, "paragraphs": clean_paras})
-    if len(normalized) < 4:
-        normalized.append({"heading": "关键事实与交易进程", "paragraphs": ["公开资料已经披露的交易日期、交易金额、交易双方基本情况与完成进度，是复盘该案例的基础；公开资料没有披露的内容不写成确定结论。"]})
     total = len(normalized)
     for idx, sec in enumerate(normalized, start=1):
         body = improve_heading_text(strip_heading_number(str(sec.get("heading") or "")), is_last=(idx == total))
         number = cn_number(idx)
-        if idx == total:
-            if "结语" in body:
-                suffix = body.split("结语", 1)[-1].lstrip("：: 　") or "从公开事实回到执行关注点"
-            else:
-                suffix = body or "从公开事实回到执行关注点"
+        if idx == total and "结语" in body:
+            suffix = body.split("结语", 1)[-1].lstrip("：: 　")
             sec["heading"] = f"{number}、结语：{suffix}"
         else:
             sec["heading"] = f"{number}、{body}"
@@ -313,7 +289,7 @@ def annotate_party_first_mentions(article: dict[str, object], brief: CaseBrief) 
         after = text[idx + len(name): idx + len(name) + 1]
         if after == "（":
             return text, True
-        note = f"{name}（下文简称“{short}”）"
+        note = f"{name}（下称“{short}”）"
         return text[:idx] + note + text[idx + len(name):], True
 
     for name, short in parties:
@@ -357,6 +333,27 @@ def has_ascii_punct_near_cjk(text: str) -> bool:
     return bool(re.search(rf"([{CJK}])[,;:!?()\[\]]|[,;:!?()\[\]]([{CJK}])", text))
 
 
+def has_unformatted_quantity_number(text: str) -> bool:
+    return bool(UNFORMATTED_QUANTITY_RE.search(text))
+
+
+def section_concreteness_score(text: str, brief: CaseBrief) -> int:
+    score = 0
+    if re.search(r"\d", text):
+        score += 1
+    acquirer, target = party_names_for_title(brief)
+    if name_in_text(acquirer, text) or name_in_text(target, text):
+        score += 1
+    concrete_terms = (
+        "对价", "估值", "支付", "股权", "控制权", "并表", "交割", "过户", "公告", "协议",
+        "收入", "营收", "净利润", "现金流", "负债", "产能", "订单", "客户", "用户", "员工",
+        "技术", "专利", "资源", "门店", "平台", "监管", "审批", "锁定期", "业绩承诺",
+    )
+    if sum(1 for term in concrete_terms if term in text) >= 3:
+        score += 1
+    return score
+
+
 def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_length: bool = True) -> list[str]:
     article = postprocess_article(article, brief)
     issues: list[str] = []
@@ -370,7 +367,7 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
     title_target = target or inferred_t
 
     if strict_length and length < MIN_CHARS:
-        issues.append(f"成品字数不足，当前约 {length} 字，必须大于3500个中文字符。")
+        issues.append(f"成品字数不足，当前约 {length} 字，必须不少于3500个中文字符。")
     if strict_length and length > MAX_CHARS:
         issues.append(f"成品字数过长，当前约 {length} 字，必须小于4000个中文字符。")
     if title_length(title) > 40:
@@ -386,6 +383,8 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
         issues.append("中文字符与英文单词或数字之间不应添加空格。")
     if has_ascii_punct_near_cjk(text):
         issues.append("全文应使用一致的全角中文标点。")
+    if has_unformatted_quantity_number(text):
+        issues.append("金额、数量等数字应添加千分位逗号，例如1,100名员工、12,500万元。")
 
     intro = str(article.get("intro") or "")[:140]
     if any(pattern in intro for pattern in BANNED_INTRO_PATTERNS):
@@ -411,16 +410,35 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
             if not isinstance(sec, dict):
                 continue
             heading = strip_heading_number(str(sec.get("heading") or ""))
+            paragraphs = sec.get("paragraphs") or []
+            paragraph_text = "\n".join(str(p) for p in paragraphs) if isinstance(paragraphs, list) else str(paragraphs or "")
+            sec_text = heading + "\n" + paragraph_text
             if any(generic in heading for generic in GENERIC_HEADINGS):
                 issues.append(f"章节标题过于机械：{heading}，需要改为客观概括该章事实和关注点的标题。")
             if any(pattern in heading for pattern in HEADING_THINKING_PATTERNS):
                 issues.append(f"章节标题出现思考过程词汇：{heading}，不要把交易动机/交易背景/交易结构设计等直接写进标题。")
             if any(pattern in heading for pattern in BANNED_TONE_PATTERNS):
                 issues.append(f"章节标题表达不够客观中性：{heading}。")
+            if len(re.sub(r"\s+", "", sec_text)) >= 260 and section_concreteness_score(sec_text, brief) < 2:
+                issues.append(f"章节分析过于泛化，需要把判断落回本案例的主体、金额/比例、资产、客户、治理或交割事实：{heading[:24]}。")
         expected_num = cn_number(len(sections))
         last_heading = str(sections[-1].get("heading") or "") if isinstance(sections[-1], dict) else ""
         if not last_heading.startswith(f"{expected_num}、结语：") and not last_heading.startswith(f"第{expected_num}章"):
             issues.append(f"最后一章标题必须按实际顺序编号为'{expected_num}、结语：副标题'或'第{expected_num}章 结语：副标题'。")
+        else:
+            suffix = strip_heading_number(last_heading).split("结语", 1)[-1].lstrip("：: 　")
+            if len(re.sub(r"\s+", "", suffix)) < 6:
+                issues.append("结语标题必须采用'结语：副标题'，副标题要概括本案特有的方法论启示，不能只写'结语'。")
+        if isinstance(sections[-1], dict):
+            last_paragraphs = sections[-1].get("paragraphs") or []
+            last_paragraph_text = "\n".join(str(p) for p in last_paragraphs) if isinstance(last_paragraphs, list) else str(last_paragraphs or "")
+            last_text = last_heading + "\n" + last_paragraph_text
+            if any(phrase in last_text for phrase in GENERIC_CONCLUSION_PHRASES):
+                issues.append("结语/启示部分存在泛泛口号，必须紧扣本案例的交易双方、对价结构、产业位置、业务承接和披露事实。")
+            if section_concreteness_score(last_text, brief) < 3:
+                issues.append("结语/启示深度不足，需要回到本案例的交易结构、财务数据、产业位置、交割承接或并购方法论意义。")
+            if (title_acquirer and not name_in_text(title_acquirer, last_text)) or (title_target and not name_in_text(title_target, last_text)):
+                issues.append("结语需要点名回到本案例交易双方，而不是写成通用并购总结。")
 
     digit_count = len(re.findall(r"\d", text))
     if digit_count < 35:
@@ -491,43 +509,3 @@ def extract_research_fact_lines(research_rows: list[dict[str, str]], limit: int 
                 if len(lines) >= limit:
                     return lines
     return lines
-
-
-def build_supplement_paragraphs(brief: CaseBrief, research_rows: list[dict[str, str]]) -> list[str]:
-    acquirer, target = party_names_for_title(brief)
-    fact_lines = extract_research_fact_lines(research_rows, limit=8)
-    fact_text = "；".join(fact_lines[:4]) if fact_lines else "公开资料披露了交易主体、完成进度、交易金额或股权比例等基础信息"
-    deal_status = brief.deal_status or ("已完成，" + brief.completed_year if brief.completed_year else "已披露进展")
-    deal_value = brief.deal_value or "公开资料未披露统一口径的完整金额"
-    buyer_reason = brief.buyer_motivation or "公开资料显示，收购方围绕业务协同、能力补强、资产控制或上市平台整合推进交易"
-    seller_reason = brief.seller_motivation or "公开资料显示，出售方或被整合方接受交易安排，与股权转让、资源承接、平台整合或资本化路径有关"
-    financials = brief.financial_highlights or ("；".join(fact_lines[4:8]) if len(fact_lines) > 4 else "公开资料披露的经营数据需要与公告、年报和交割文件交叉核验")
-    return [
-        normalize_text(f"围绕{brief.case_name}，公开资料能够直接复核的事实包括交易主体、进展状态和核心金额口径。收购方为{acquirer or '公开披露的买方'}，标的方或被整合方为{target or '公开披露的标的'}；交易状态为{deal_status}；交易金额或估值口径为{deal_value}。这些信息决定了复盘边界：交易评价不从主观判断出发，而从公告、交割文件、财务数据和双方披露的安排展开。"),
-        normalize_text(f"从收购方角度看，购买理由需要落在已经披露的业务和资产关系上。{buyer_reason}。相关安排的后续观察重点，包括收购方是否通过交易取得控制权、稳定现金流、客户关系、技术能力、产能或资源储备，以及这些要素在交割后的管理边界。"),
-        normalize_text(f"从出售方或被整合方角度看，接受交易安排同样需要回到披露文件。{seller_reason}。在控股权转让、吸收合并、资产注入或私有化案例中，公开资料通常需要同时观察价格、交割确定性、支付方式、债务承接、员工和客户稳定、原有业务后续安排以及审批节奏。"),
-        normalize_text(f"数据层面的复核重点包括：{financials}。同时，公开资料中出现的关键事实还包括：{fact_text}。这些数字应与交易对价、估值倍数、股权比例、收入和利润贡献放在同一框架下观察，避免只用单一金额解释交易价值。"),
-    ]
-
-
-def append_until_min_length(article: dict[str, object], brief: CaseBrief, research_rows: list[dict[str, str]]) -> dict[str, object]:
-    article = postprocess_article(article, brief)
-    if chinese_length(article_text(article)) >= MIN_CHARS:
-        return article
-    sections = article.get("sections") or []
-    if not isinstance(sections, list) or not sections:
-        article["sections"] = [{"heading": "一、关键事实与交易进程", "paragraphs": []}, {"heading": "二、结语：从公开事实回到执行关注点", "paragraphs": []}]
-        sections = article["sections"]
-    target_index = max(0, len(sections) - 2)
-    if not isinstance(sections[target_index], dict):
-        target_index = len(sections) - 1
-    paragraphs = sections[target_index].setdefault("paragraphs", [])
-    if not isinstance(paragraphs, list):
-        paragraphs = []
-        sections[target_index]["paragraphs"] = paragraphs
-    for para in build_supplement_paragraphs(brief, research_rows):
-        if chinese_length(article_text(article)) >= TARGET_MIN_CHARS:
-            break
-        paragraphs.append(para)
-        article = postprocess_article(article, brief)
-    return article

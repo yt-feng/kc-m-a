@@ -27,12 +27,12 @@ infer_parties_from_case_name = base.infer_parties_from_case_name
 party_names_for_title = base.party_names_for_title
 cn_number = base.cn_number
 strip_heading_number = base.strip_heading_number
-append_until_min_length = base.append_until_min_length
 trim_article = base.trim_article
 extract_research_fact_lines = base.extract_research_fact_lines
 
 COMPANY_SUFFIX = r"(?:股份有限公司|有限责任公司|科技有限公司|娱乐集团|有限公司|集团|公司)"
-BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”(?:，[^）]+)?）([{CJK}A-Za-z0-9·&]+{COMPANY_SUFFIX})")
+LEGAL_NAME_TAIL = r"(?:科技有限公司|股份有限公司|有限责任公司|娱乐集团|有限公司|集团|公司)"
+BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”(?:，[^）]+)?）(?!收购|并购|购买|出售|转让|受让|入股|控股|合并)([{CJK}A-Za-z0-9·&]{{0,12}}{LEGAL_NAME_TAIL})")
 DUP_NOTE_PATTERN = re.compile(r"(?P<note>（下称“[^”]+”(?:，[^）]+)?）)(?P=note)+")
 ANY_COMPANY_NOTE_PATTERN = re.compile(r"（下称“[^”]+”(?:，[^）]+)?）")
 KNOWN_COMPANY_NOTES = {
@@ -110,6 +110,18 @@ def _apply_known_company_notes(text: str, *, add_known_notes: bool) -> str:
     return _collapse_duplicate_notes(text)
 
 
+def _apply_known_company_notes_once(text: str, seen_notes: set[str]) -> str:
+    text = _apply_known_company_notes(text, add_known_notes=False)
+    for full_name, canonical in KNOWN_COMPANY_NOTES.items():
+        if full_name not in text:
+            continue
+        if full_name in seen_notes:
+            continue
+        text = text.replace(full_name, canonical, 1)
+        seen_notes.add(full_name)
+    return _collapse_duplicate_notes(text)
+
+
 def strip_company_notes(text: str) -> str:
     """Remove parenthetical short-name notes, useful for titles."""
     text = convert_halfwidth_quotes(str(text or ""))
@@ -136,10 +148,19 @@ def repair_party_annotation_text(text: str, *, add_known_notes: bool = True) -> 
     return base.normalize_text(text)
 
 
+def repair_party_annotation_text_once(text: str, seen_notes: set[str]) -> str:
+    text = convert_halfwidth_quotes(str(text or ""))
+    text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
+    text = _repair_split_notes(text)
+    text = _apply_known_company_notes_once(text, seen_notes)
+    return base.normalize_text(text)
+
+
 def _walk_text_fields(article: dict[str, object]) -> None:
     # Titles should be concise and should not carry first-mention legal notes.
     article["title"] = strip_company_notes(str(article.get("title") or ""))
-    article["intro"] = repair_party_annotation_text(str(article.get("intro") or ""), add_known_notes=True)
+    seen_notes: set[str] = set()
+    article["intro"] = repair_party_annotation_text_once(str(article.get("intro") or ""), seen_notes)
     sections = article.get("sections") or []
     if isinstance(sections, list):
         for sec in sections:
@@ -148,7 +169,7 @@ def _walk_text_fields(article: dict[str, object]) -> None:
             sec["heading"] = strip_company_notes(str(sec.get("heading") or ""))
             paragraphs = sec.get("paragraphs") or []
             if isinstance(paragraphs, list):
-                sec["paragraphs"] = [repair_party_annotation_text(str(p), add_known_notes=True) for p in paragraphs]
+                sec["paragraphs"] = [repair_party_annotation_text_once(str(p), seen_notes) for p in paragraphs]
 
 
 def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[str, object]:
@@ -178,12 +199,45 @@ def _has_halfwidth_quote(text: str) -> bool:
     return '"' in text or "'" in text
 
 
+def _article_body_text(article: dict[str, object]) -> str:
+    parts = [str(article.get("intro") or "")]
+    sections = article.get("sections") or []
+    if isinstance(sections, list):
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            parts.append(str(sec.get("heading") or ""))
+            paragraphs = sec.get("paragraphs") or []
+            if isinstance(paragraphs, list):
+                parts.extend(str(p) for p in paragraphs)
+    return "\n".join(parts)
+
+
+def _missing_required_party_note(body_text: str, brief: CaseBrief) -> bool:
+    for name in (brief.acquirer, brief.target):
+        name = str(name or "").strip()
+        if len(name) < 3:
+            continue
+        if not re.search(COMPANY_SUFFIX + r"$", name, flags=re.I) and not re.search(r"\b(?:Corporation|Inc\.?|Limited|Ltd\.?|PLC)\b", name, flags=re.I):
+            continue
+        idx = body_text.find(name)
+        if idx < 0:
+            continue
+        after = body_text[idx + len(name): idx + len(name) + 48]
+        if not after.startswith("（下称“"):
+            return True
+    return False
+
+
 def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_length: bool = True) -> list[str]:
     issues = base.validate_article(article, brief, strict_length=strict_length)
     postprocess_article(article, brief)
     text = article_text(article)
+    body_text = _article_body_text(article)
     if _has_malformed_party_annotation(text):
         issues.append("公司首次出现的简称标注位置错误或重复，应写在完整公司名称之后且只出现一次，例如“上海喜马拉雅科技有限公司（下称“喜马拉雅”）”。")
+    if _missing_required_party_note(body_text, brief):
+        issues.append("公司名称首次出现时，应使用完整名称并在其后标注简称和股票代码（如上市）；资料没有披露股票代码时不得编造。")
     if _has_halfwidth_quote(text):
         issues.append("文中的引号需要使用全角中文引号“”。")
     return issues

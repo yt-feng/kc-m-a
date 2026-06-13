@@ -13,19 +13,22 @@ import requests
 
 from .config import CATEGORIES, CATEGORY_GUIDE, OUTPUT_COLUMNS, chunked
 from .sources import RawItem, normalize_text
+from .sources_fixed import is_aggregator_url, unwrap_news_url
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 MAX_CASES_PER_BATCH = 12
+PLACEHOLDER_VALUES = {"", "-", "无", "未知", "不详", "未披露", "n/a", "na", "none", "null"}
+PARTY_SUFFIX_RE = re.compile(
+    r"(股份有限公司|有限责任公司|有限公司|控股集团|控股有限公司|集团股份|集团|公司|"
+    r"corporation|inc\.?|limited|ltd\.?|plc|holdings?)",
+    re.I,
+)
 
 
 class DeepSeekError(RuntimeError):
     pass
-
-
-def allow_rough_fallback() -> bool:
-    return os.getenv("MNA_ALLOW_ROUGH_FALLBACK", "").strip().lower() in {"1", "true", "yes", "y"}
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -76,7 +79,7 @@ def deepseek_chat(messages: list[dict[str, str]], *, model: str | None = None, t
 def compact_item(item: RawItem) -> dict[str, str]:
     return {
         "title": str(item.title or "")[:180],
-        "url": str(item.url or "")[:500],
+        "url": unwrap_news_url(str(item.url or ""))[:500],
         "source_name": str(item.source_name or "")[:80],
         "published_at": str(item.published_at or "")[:40],
         "summary": str(item.summary or "")[:260],
@@ -108,7 +111,8 @@ A 列「案例分类」只能从以下 10 个分类中选择：
 6. 中国 A 股/港股案例优先保留；全球新闻只保留具有明确交易金额、交易双方或战略意义的案例。
 7. 对中东买方（如 PIF、Mubadala、QIA、ADQ、ADIA、KIA、OIA、Mumtalakat、ICD、Prosperity7、G42、e& 等）收购、入股、控股、少数股权、业务剥离、私有化海外企业的案例优先识别；若只是 MoU/合作且没有股权或资产交易，剔除或在备注中明确说明。
 8. 严格去重，同一交易只输出一行，URL 取最能证明交易的来源。
-9. JSON 规则：只能输出 JSON；字符串中的英文双引号必须转义；不得输出尾随逗号、注释、Markdown、未闭合字符串或未转义换行。
+9. URL 必须使用候选信息中的原始公告/媒体链接，不得输出 news.google.com、news.google.com/rss/articles、bing.com/news/apiclick 这类聚合跳转链接。
+10. JSON 规则：只能输出 JSON；字符串中的英文双引号必须转义；不得输出尾随逗号、注释、Markdown、未闭合字符串或未转义换行。
 
 候选信息 JSON：
 {json.dumps(raw_items, ensure_ascii=False, separators=(",", ":"))}
@@ -143,9 +147,90 @@ def normalize_case(row: dict[str, Any]) -> dict[str, str]:
         if value is None or value == "":
             value = "-"
         normalized[col] = str(value).strip()
+    normalized["URL"] = unwrap_news_url(normalized.get("URL", ""))
+    if is_aggregator_url(normalized["URL"]):
+        normalized["URL"] = "-"
     if normalized.get("案例分类") not in CATEGORIES:
         normalized["案例分类"] = infer_category_from_text(" ".join(normalized.values()))
     return normalized
+
+
+def normalize_party(value: str | None) -> str:
+    text = normalize_text(value or "")
+    text = re.sub(r"（.*?）|\(.*?\)", "", text)
+    text = PARTY_SUFFIX_RE.sub("", text)
+    text = re.sub(r"[\s·・,，.。:：;；/\\|&＋+_-]+", "", text)
+    return "" if text in PLACEHOLDER_VALUES or any(token in text for token in ("未披露", "未知", "不详", "某标的", "标的资产", "标的公司")) else text
+
+
+def party_part_matches(left: str, right: str) -> bool:
+    left = normalize_party(left)
+    right = normalize_party(right)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if len(left) >= 3 and len(right) >= 3 and (left in right or right in left):
+        return True
+    return False
+
+
+def normalize_case_title(value: str | None) -> str:
+    text = normalize_text(value or "")
+    text = re.sub(r"^(?:weekly|backfill)_\d{8}_\d{6}_", "", text)
+    text = re.split(r"[:：]", text, maxsplit=1)[0]
+    text = re.sub(r"20\d{2}[年/-]?\d{0,2}[月/-]?\d{0,2}日?", "", text)
+    text = re.sub(r"\d+(?:,\d{3})*(?:\.\d+)?(?:亿元|亿美元|亿港元|万元|美元|港元|元|%|％|股|股份|股权)?", "", text)
+    text = re.sub(r"(交易复盘|案例分析|并购案例|交易启示|交易观察|并购启示|案例研究)", "", text)
+    text = re.sub(r"\W+", "", text)
+    return text[:80]
+
+
+def case_identity(row: dict[str, str]) -> str:
+    acquirer = normalize_party(row.get("并购方"))
+    target = normalize_party(row.get("目标方"))
+    if acquirer and target:
+        return f"party:{acquirer}->{target}"
+    title = normalize_case_title(row.get("案例一句话简介") or row.get("备注") or row.get("URL"))
+    return f"title:{title}" if title else ""
+
+
+def case_identities(row: dict[str, str]) -> set[str]:
+    acquirer = normalize_party(row.get("并购方"))
+    target = normalize_party(row.get("目标方"))
+    title = normalize_case_title(row.get("案例一句话简介") or row.get("备注") or row.get("URL"))
+    keys: set[str] = set()
+    if acquirer and target:
+        keys.add(f"party:{acquirer}->{target}")
+    if title:
+        keys.add(f"title:{title}")
+    return keys
+
+
+def case_identity_matches(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    left_kind, _, left_value = left.partition(":")
+    right_kind, _, right_value = right.partition(":")
+    if left_kind != right_kind:
+        return False
+    if left_kind == "party":
+        left_a, _, left_t = left_value.partition("->")
+        right_a, _, right_t = right_value.partition("->")
+        return party_part_matches(left_a, right_a) and party_part_matches(left_t, right_t)
+    if left_kind == "title":
+        return len(left_value) >= 6 and len(right_value) >= 6 and (left_value in right_value or right_value in left_value)
+    return False
+
+
+def identity_in_set(identity: str, previous_identities: set[str]) -> bool:
+    return any(case_identity_matches(identity, previous) for previous in previous_identities)
+
+
+def identities_overlap(identities: set[str], previous_identities: set[str]) -> bool:
+    return any(identity_in_set(identity, previous_identities) for identity in identities)
 
 
 def infer_category_from_text(text: str) -> str:
@@ -171,30 +256,6 @@ def infer_category_from_text(text: str) -> str:
     return "依托上市平台持续整合同类资产"
 
 
-def rough_cases_from_items(items: list[RawItem], limit: int = 30) -> list[dict[str, str]]:
-    cases: list[dict[str, str]] = []
-    for item in items[:limit]:
-        text = f"{item.title} {item.summary}"
-        cases.append({
-            "案例分类": infer_category_from_text(text),
-            "并购方": "-",
-            "目标方": "-",
-            "案例所属行业": "-",
-            "并购方主营业务": "-",
-            "标的主营业务": "-",
-            "案例一句话简介": str(item.title)[:120],
-            "交易时间": item.published_at[:10] if item.published_at else "-",
-            "交易对价": "-",
-            "交易状态": "未知",
-            "备注": f"DeepSeek 结构化失败后的候选保底行，需人工复核。原始摘要：{str(item.summary)[:180]}",
-            "来源名称": item.source_name,
-            "URL": item.url,
-            "发布日期": item.published_at,
-            "地区": item.region_hint,
-        })
-    return dedupe_cases(cases)
-
-
 def parse_deepseek_batch(batch: list[RawItem], start_label: str, end_label: str, batch_index: int) -> list[dict[str, str]]:
     content = ""
     try:
@@ -210,20 +271,14 @@ def parse_deepseek_batch(batch: list[RawItem], start_label: str, end_label: str,
         normalized = [normalize_case(row) for row in batch_cases if isinstance(row, dict)]
         return normalized[:MAX_CASES_PER_BATCH]
     except Exception as exc:  # noqa: BLE001
-        if not allow_rough_fallback():
-            raise DeepSeekError(f"DeepSeek batch {batch_index} failed and rough fallback is disabled: {exc}") from exc
-        LOGGER.warning("DeepSeek batch %s failed; using rough fallback for this batch. error=%s content_prefix=%s", batch_index, exc, content[:500])
-        return rough_cases_from_items(batch, limit=3)
+        raise DeepSeekError(f"DeepSeek batch {batch_index} failed: {exc}; content_prefix={content[:500]}") from exc
 
 
 def structure_cases(items: list[RawItem], *, start_label: str, end_label: str, batch_size: int = 20, max_cases: int = 80) -> list[dict[str, str]]:
     if not items:
         return []
     if not os.getenv("DEEPSEEK_API_KEY"):
-        if not allow_rough_fallback():
-            raise DeepSeekError("DEEPSEEK_API_KEY is not set and rough fallback is disabled")
-        LOGGER.warning("DEEPSEEK_API_KEY is not set; using rough fallback rows")
-        return rough_cases_from_items(items, limit=max_cases)
+        raise DeepSeekError("DEEPSEEK_API_KEY is not set")
     all_cases: list[dict[str, str]] = []
     for batch_index, batch in enumerate(chunked(items, batch_size), start=1):
         all_cases.extend(parse_deepseek_batch(batch, start_label, end_label, batch_index))
@@ -234,10 +289,13 @@ def dedupe_cases(cases: list[dict[str, str]]) -> list[dict[str, str]]:
     seen: set[str] = set()
     result: list[dict[str, str]] = []
     for row in cases:
-        key_text = "|".join(normalize_text(row.get(field, "")) for field in ("并购方", "目标方", "案例一句话简介", "URL"))
-        key = re.sub(r"\W+", "", key_text)
-        if not key or key in seen:
+        keys = case_identities(row)
+        if not keys:
+            key_text = "|".join(normalize_text(row.get(field, "")) for field in ("并购方", "目标方", "案例一句话简介", "URL"))
+            key = re.sub(r"\W+", "", key_text)
+            keys = {key} if key else set()
+        if not keys or identities_overlap(keys, seen):
             continue
-        seen.add(key)
+        seen.update(keys)
         result.append(row)
     return result
