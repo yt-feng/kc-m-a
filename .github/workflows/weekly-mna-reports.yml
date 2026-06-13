@@ -51,8 +51,10 @@ jobs:
       REPORT_LOOKBACK_DAYS: ${{ github.event.inputs.days || '7' }}
       REPORT_OFFSET: ${{ github.event.inputs.offset || '0' }}
       REPORT_OUTPUT_ROOT: case_reports
-      REPORT_MAX_RAW_ITEMS: "450"
+      REPORT_MAX_RAW_ITEMS: "220"
       REPORT_CONTINUE_ON_ERROR: "1"
+      REPORT_MAX_REVISIONS: "2"
+      REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: "1"
       MNA_MAX_TITLE_URL_RESOLVES: "10"
       PYTHONUNBUFFERED: "1"
     steps:

@@ -151,11 +151,6 @@ def unwrap_news_url(url: str, *, publisher_url: str = "") -> str:
         direct = _first_query_url(url, ("url", "u"))
         if direct:
             return direct
-    if host in GOOGLE_NEWS_HOSTS and publisher_url:
-        # This is a last-resort fallback. Google RSS source@url is usually the
-        # publisher homepage rather than the article, but it is still preferable
-        # to a non-openable Google RSS article wrapper.
-        return publisher_url
     return url
 
 
@@ -168,10 +163,10 @@ def resolve_news_link(link: str, *, title: str = "", publisher_url: str = "") ->
         cache_key = normalize_text(title)[:220]
         if cache_key in _TITLE_URL_RESOLVE_CACHE:
             cached = _TITLE_URL_RESOLVE_CACHE[cache_key]
-            return cached or publisher_url or unwrapped or link
+            return cached or (unwrapped if unwrapped and not is_aggregator_url(unwrapped) else "")
         if _TITLE_URL_RESOLVE_ATTEMPTS >= MAX_TITLE_URL_RESOLVES:
             _TITLE_URL_RESOLVE_CACHE[cache_key] = ""
-            return publisher_url or unwrapped or link
+            return unwrapped if unwrapped and not is_aggregator_url(unwrapped) else ""
         _TITLE_URL_RESOLVE_ATTEMPTS += 1
         try:
             for candidate in rss_items(
@@ -191,9 +186,7 @@ def resolve_news_link(link: str, *, title: str = "", publisher_url: str = "") ->
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("News URL title resolution failed: title=%s error=%s", title[:120], exc)
         _TITLE_URL_RESOLVE_CACHE[cache_key] = ""
-    if publisher_url:
-        return publisher_url
-    return unwrapped or link
+    return unwrapped if unwrapped and not is_aggregator_url(unwrapped) else ""
 
 
 def strip_html(value: str | None) -> str:

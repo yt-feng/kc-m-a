@@ -27,6 +27,10 @@ from .research import collect_research_context
 LOGGER = logging.getLogger(__name__)
 
 
+def external_evidence_count(research_rows: list[dict[str, str]]) -> int:
+    return sum(1 for row in research_rows if (row.get("evidence_type") or "") != "structured_seed")
+
+
 def build_prompt(
     brief: CaseBrief,
     research_rows: list[dict[str, str]],
@@ -116,16 +120,27 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
 def generate_article(brief: CaseBrief) -> dict[str, object]:
     research_items = collect_research_context(brief)
     research_rows = [item.to_dict() for item in research_items]
-    LOGGER.info("Collected %s research items for report: %s", len(research_rows), brief.case_name)
+    external_count = external_evidence_count(research_rows)
+    LOGGER.info("Collected %s research items for report: %s external=%s", len(research_rows), brief.case_name, external_count)
+    if external_count < int(os.getenv("REPORT_MIN_EXTERNAL_RESEARCH_ITEMS", "1")):
+        raise RuntimeError(f"Insufficient external research evidence for {brief.case_name}; only structured seed was found.")
     try:
         return generate_article_with_rows(brief, research_rows)
     except Exception as exc:  # noqa: BLE001
+        if external_count < 2 and os.getenv("REPORT_EXPAND_WEAK_RESEARCH", "0") != "1":
+            raise
         LOGGER.warning("Initial report generation failed for %s; expanding Google/Bing/page research and regenerating: %s", brief.case_name, exc)
         expanded_items = collect_research_context(brief, limit=56, expanded=True)
         expanded_rows = [item.to_dict() for item in expanded_items]
-        if len(expanded_rows) <= len(research_rows):
+        expanded_external_count = external_evidence_count(expanded_rows)
+        LOGGER.info(
+            "Expanded research context to %s items for report: %s external=%s",
+            len(expanded_rows),
+            brief.case_name,
+            expanded_external_count,
+        )
+        if len(expanded_rows) <= len(research_rows) or expanded_external_count < 2:
             raise
-        LOGGER.info("Expanded research context to %s items for report: %s", len(expanded_rows), brief.case_name)
         return generate_article_with_rows(brief, expanded_rows)
 
 

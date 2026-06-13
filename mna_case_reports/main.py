@@ -11,7 +11,19 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .case_selection import CaseBrief, choose_balanced, candidates_from_weekly, discover_backfill_cases, extended_pool_briefs, save_manifest, seed_briefs, summarize_raw_items
+from .case_selection import (
+    CaseBrief,
+    briefs_from_latest_weekly_workbook,
+    choose_balanced,
+    discover_backfill_cases,
+    extended_pool_briefs,
+    has_usable_source_url,
+    is_report_ready_candidate,
+    lightweight_weekly_candidates,
+    save_manifest,
+    seed_briefs,
+    summarize_raw_items,
+)
 from .config import CATEGORY_FOLDER_NAMES, CATEGORIES
 from .docx_writer import write_docx
 from .report_generation import generate_article
@@ -39,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-raw-items", type=int, default=int(os.getenv("REPORT_MAX_RAW_ITEMS", "450")))
     parser.add_argument("--offset", type=int, default=int(os.getenv("REPORT_OFFSET", "0")), help="Skip this many selected cases before generation; useful for batched backfills.")
     parser.add_argument("--continue-on-error", action="store_true", default=os.getenv("REPORT_CONTINUE_ON_ERROR", "1") == "1", help="Write partial outputs instead of failing the whole batch on one bad report.")
+    parser.add_argument("--weekly-output-dir", default=os.getenv("REPORT_WEEKLY_OUTPUT_DIR", "outputs"), help="Directory containing weekly Excel candidate workbooks.")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -79,14 +92,27 @@ def main() -> None:
         LOGGER.info("Discovering backfill cases")
         briefs = discover_backfill_cases(max((args.offset + pool_count) * 3, 30))
     else:
-        LOGGER.info("Collecting weekly report candidates")
-        raw_items = candidates_from_weekly(args.days, args.max_raw_items)
-        briefs = summarize_raw_items(raw_items, target_count=max(pool_count * 3, 12))
-        briefs.extend(extended_pool_briefs())
-        briefs.extend(seed_briefs())
+        LOGGER.info("Loading weekly report candidates from latest structured Excel")
+        briefs = briefs_from_latest_weekly_workbook(Path(args.weekly_output_dir))
+        ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
+        source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
+        LOGGER.info("Weekly Excel candidate pool: total=%s ready=%s source_ready=%s", len(briefs), ready_count, source_ready_count)
+        if ready_count < args.count or source_ready_count < args.count:
+            LOGGER.info("Collecting live weekly report candidates because Excel source-ready pool is below requested count")
+            raw_items = lightweight_weekly_candidates(args.days, args.max_raw_items)
+            live_briefs = summarize_raw_items(raw_items, target_count=max(pool_count * 3, 12))
+            LOGGER.info("Live weekly candidate pool: raw=%s summarized=%s", len(raw_items), len(live_briefs))
+            briefs.extend(live_briefs)
+        if os.getenv("REPORT_ALLOW_STATIC_WEEKLY_POOL", "0") == "1":
+            LOGGER.info("Static weekly report pool is explicitly enabled")
+            briefs.extend(extended_pool_briefs())
+            briefs.extend(seed_briefs())
 
     selected_all = choose_balanced(briefs, count=args.offset + pool_count, min_domestic=args.min_domestic, report_root=output_root)
     selected = selected_all[args.offset :]
+    effective_min_domestic = min(args.min_domestic, sum(1 for brief in selected if brief.is_domestic))
+    if effective_min_domestic < args.min_domestic:
+        LOGGER.info("Lowering domestic quota for this run because selected candidate pool has only %s domestic candidates", effective_min_domestic)
     timestamp = datetime.now(BEIJING_TZ).strftime("%Y%m%d_%H%M%S")
     run_label = f"{args.mode}_{timestamp}"
     manifest_path = output_root / "_manifests" / f"{run_label}.json"
@@ -99,10 +125,24 @@ def main() -> None:
     for index, brief in enumerate(selected, start=1):
         if len(written) >= args.count:
             break
-        if not should_try_candidate(brief, written_briefs=written_briefs, requested_count=args.count, min_domestic=args.min_domestic):
+        if not should_try_candidate(brief, written_briefs=written_briefs, requested_count=args.count, min_domestic=effective_min_domestic):
             LOGGER.info("Skipping candidate because remaining slots are reserved for domestic reports: %s [%s]", brief.case_name, brief.category)
             continue
         attempted += 1
+        if not is_report_ready_candidate(brief):
+            LOGGER.info("Skipping report candidate before research because preflight is weak: %s [%s]", brief.case_name, brief.category)
+            failures.append({"case_name": brief.case_name, "category": brief.category, "error": "preflight rejected weak report candidate"})
+            write_progress(progress_path, {
+                "mode": args.mode,
+                "run_label": run_label,
+                "requested_count": args.count,
+                "candidate_count": len(selected),
+                "attempted_count": attempted,
+                "offset": args.offset,
+                "written": written,
+                "failures": failures,
+            })
+            continue
         LOGGER.info("Generating report attempt %s from candidate %s/%s: %s [%s]", attempted, index, len(selected), brief.case_name, brief.category)
         try:
             article = generate_article(brief)
@@ -142,7 +182,7 @@ def main() -> None:
     write_progress(progress_path, result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
-    if failures and not written:
+    if not written:
         raise RuntimeError("All report generations failed; see progress manifest for details.")
 
 

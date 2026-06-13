@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from openpyxl import load_workbook
+
 from mna_weekly_tracker.sources_fixed import is_aggregator_url, unwrap_news_url
 from mna_weekly_tracker.sources_rich import RawItem, fetch_all_candidates
 
@@ -25,6 +27,26 @@ VAGUE_PARTY_TERMS = ("未披露", "未知", "不详", "某标的", "标的资产
 PARTY_SUFFIX_RE = re.compile(
     r"(股份有限公司|有限责任公司|有限公司|控股集团|控股有限公司|控股|集团|公司|"
     r"corporation|inc\.?|limited|ltd\.?|plc|holdings?)",
+    re.I,
+)
+PLACEHOLDER_TEXT = {"", "-", "无", "未知", "不详", "未披露", "n/a", "na", "none", "null"}
+HOMEPAGE_ALLOWED_DOMAINS = (
+    "cninfo.com.cn",
+    "static.cninfo.com.cn",
+    "sse.com.cn",
+    "szse.cn",
+    "bse.cn",
+    "hkexnews.hk",
+    "sec.gov",
+)
+DEAL_NUMBER_RE = re.compile(
+    r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|％|亿元|亿美元|亿港元|万港元|万元|美元|港元|元|股|股份|股权|"
+    r"crore|million|billion|bn|mn)?",
+    re.I,
+)
+DEAL_VALUE_RE = re.compile(
+    r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|％|亿元|亿美元|亿港元|万港元|万元|美元|港元|元|股|股份|股权|"
+    r"crore|million|billion|bn|mn)",
     re.I,
 )
 
@@ -88,6 +110,93 @@ class CaseBrief:
 def excluded_terms() -> list[str]:
     raw = os.getenv("REPORT_EXCLUDE_CASE_TERMS", "")
     return [term.strip().lower() for term in re.split(r"[,，;；\n]+", raw) if term.strip()]
+
+
+def clean_cell(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def is_placeholder(value: str | None) -> bool:
+    return clean_cell(value).lower() in PLACEHOLDER_TEXT
+
+
+def parse_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = clean_cell(value).lower()
+    if text in {"true", "1", "yes", "y", "是", "已完成", "完成"}:
+        return True
+    if text in {"false", "0", "no", "n", "否", "未完成", "进行中", "审批中", "意向", "终止"}:
+        return False
+    return default
+
+
+def has_deal_number(value: str | None) -> bool:
+    text = clean_cell(value)
+    if is_placeholder(text):
+        return False
+    return bool(DEAL_NUMBER_RE.search(text))
+
+
+def has_deal_value_signal(value: str | None) -> bool:
+    text = clean_cell(value)
+    if is_placeholder(text):
+        return False
+    return bool(DEAL_VALUE_RE.search(text))
+
+
+def has_completed_signal(value: str | None) -> bool:
+    text = clean_cell(value)
+    return any(token in text for token in ("已完成", "完成", "交割", "过户", "closed", "completed", "closing"))
+
+
+def has_usable_source_url(url: str | None) -> bool:
+    cleaned = unwrap_news_url(clean_cell(url))
+    if not cleaned or is_placeholder(cleaned) or is_aggregator_url(cleaned):
+        return False
+    try:
+        parsed = re.match(r"^https?://([^/?#]+)([^?#]*)", cleaned, re.I)
+        if not parsed:
+            return False
+        host = parsed.group(1).lower().replace("www.", "")
+        path = parsed.group(2) or ""
+    except Exception:  # noqa: BLE001
+        return False
+    if path in {"", "/"} and not any(domain in host for domain in HOMEPAGE_ALLOWED_DOMAINS):
+        return False
+    return True
+
+
+def is_report_ready_candidate(brief: CaseBrief) -> bool:
+    """Cheap preflight before spending minutes on research and model calls."""
+    if not has_explicit_parties(brief):
+        return False
+    if not brief.is_completed and not has_completed_signal(brief.deal_status):
+        return False
+    evidence_text = "\n".join([
+        brief.deal_value,
+        brief.why,
+        brief.source_title,
+        brief.financial_highlights,
+    ])
+    if not has_deal_value_signal(evidence_text):
+        return False
+    if brief.is_classic and not has_usable_source_url(brief.source_url):
+        return False
+    return True
+
+
+def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int, str]:
+    completed_penalty = 0 if brief.is_completed or has_completed_signal(brief.deal_status) else 10
+    url_penalty = 0 if has_usable_source_url(brief.source_url) else 8
+    deal_penalty = 0 if has_deal_value_signal("\n".join([brief.deal_value, brief.financial_highlights, brief.why, brief.source_title])) else 5
+    rationale_penalty = 0
+    if len(clean_cell(brief.buyer_motivation or brief.why)) < 15:
+        rationale_penalty += 1
+    if len(clean_cell(brief.seller_motivation)) < 15:
+        rationale_penalty += 1
+    classic_penalty = 2 if brief.is_classic else 0
+    return (completed_penalty, url_penalty, deal_penalty, rationale_penalty, classic_penalty, brief.case_name)
 
 
 def infer_parties_from_name(case_name: str) -> tuple[str, str]:
@@ -306,7 +415,7 @@ def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False)
         inferred_a, inferred_t = infer_parties_from_name(case_name)
         region = str(row.get("region") or "中国")
         completed_year = str(row.get("completed_year") or infer_completed_year(case_name, str(row.get("why") or "")))
-        is_completed = str(row.get("is_completed", "true")).lower() == "true"
+        is_completed = parse_bool(row.get("is_completed"), default=True)
         is_classic_raw = row.get("is_classic")
         if is_classic_raw is None:
             is_classic = default_classic or completed_year not in {"2025", "2026"}
@@ -355,6 +464,112 @@ def candidates_from_weekly(days: int, max_items: int) -> list[RawItem]:
     return raw
 
 
+def lightweight_weekly_candidates(days: int, max_items: int) -> list[RawItem]:
+    end = datetime.now(BEIJING_TZ).replace(microsecond=0)
+    start = end - timedelta(days=days)
+    from mna_weekly_tracker.sources_rich import fetch_bing_news, fetch_google_news
+
+    raw: list[RawItem] = []
+    seen: set[str] = set()
+    for query in CASE_DISCOVERY_QUERIES:
+        items: list[RawItem] = []
+        items.extend(fetch_google_news(query, start, end, source_name="Google News - report live", source_url="https://news.google.com/", region_hint="中国"))
+        items.extend(fetch_bing_news(query, start, end, source_name="Bing News - report live", source_url="https://www.bing.com/news/search", region_hint="中国"))
+        for item in items:
+            key = item.stable_key()
+            if key in seen:
+                continue
+            seen.add(key)
+            raw.append(item)
+            if len(raw) >= max_items:
+                LOGGER.info("Lightweight weekly report candidates reached cap=%s", max_items)
+                return raw
+    LOGGER.info("Lightweight weekly report candidates collected=%s", len(raw))
+    return raw
+
+
+def latest_weekly_workbook(output_dir: Path) -> Path | None:
+    paths = sorted(output_dir.glob("并购案例一览_*.xlsx"))
+    return paths[-1] if paths else None
+
+
+def _excel_bool_completed(status: str, remark: str, intro: str) -> bool:
+    return has_completed_signal(" ".join([status, remark, intro]))
+
+
+def _excel_completed_year(*values: str) -> str:
+    year = infer_completed_year(*values)
+    return year or str(datetime.now(BEIJING_TZ).year)
+
+
+def _brief_from_weekly_excel_row(row: dict[str, object]) -> CaseBrief | None:
+    acquirer = clean_cell(row.get("并购方"))
+    target = clean_cell(row.get("目标方"))
+    if is_vague_party(acquirer) or is_vague_party(target):
+        return None
+    category = safe_category(clean_cell(row.get("案例分类")))
+    intro = clean_cell(row.get("案例一句话简介"))
+    deal_time = clean_cell(row.get("交易时间"))
+    deal_value = clean_cell(row.get("交易对价"))
+    deal_status = clean_cell(row.get("交易状态"))
+    remark = clean_cell(row.get("备注"))
+    source_name = clean_cell(row.get("来源名称"))
+    source_url = unwrap_news_url(clean_cell(row.get("URL")))
+    if is_aggregator_url(source_url):
+        source_url = ""
+    case_name = f"{acquirer}收购{target}"
+    if "SPAC" in category or any(token in intro.lower() for token in ("spac", "de-spac", "despac")):
+        case_name = f"{target}通过SPAC合并上市"
+    elif any(token in intro for token in ("出售", "剥离", "转让")):
+        case_name = f"{acquirer}受让{target}"
+    elif "吸收合并" in intro:
+        case_name = f"{acquirer}吸收合并{target}"
+    evidence = "；".join(x for x in [intro, remark] if x and not is_placeholder(x))
+    return CaseBrief(
+        case_name=case_name,
+        category=category,
+        region=clean_cell(row.get("地区")) or "中国",
+        source_title=intro or source_name or case_name,
+        source_url=source_url,
+        published_at=clean_cell(row.get("发布日期")),
+        why=evidence or intro,
+        is_domestic=is_domestic_region(clean_cell(row.get("地区"))),
+        is_classic=False,
+        completed_year=_excel_completed_year(deal_time, deal_status, intro),
+        is_completed=_excel_bool_completed(deal_status, remark, intro),
+        acquirer=acquirer,
+        target=target,
+        deal_value="" if is_placeholder(deal_value) else deal_value,
+        deal_status="；".join(x for x in [deal_time, deal_status] if x and not is_placeholder(x)),
+        buyer_motivation=evidence,
+        seller_motivation=remark if remark and not is_placeholder(remark) else "",
+        financial_highlights=evidence if has_deal_number(evidence) else "",
+    )
+
+
+def briefs_from_latest_weekly_workbook(output_dir: Path) -> list[CaseBrief]:
+    workbook_path = latest_weekly_workbook(output_dir)
+    if not workbook_path:
+        LOGGER.info("No weekly Excel workbook found under %s", output_dir)
+        return []
+    try:
+        workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+        sheet = workbook["周度并购案例"] if "周度并购案例" in workbook.sheetnames else workbook.active
+        rows = sheet.iter_rows(values_only=True)
+        headers = [clean_cell(value) for value in next(rows, [])]
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to read weekly Excel workbook for report candidates: %s error=%s", workbook_path, exc)
+        return []
+    briefs: list[CaseBrief] = []
+    for values in rows:
+        row = {headers[index]: value for index, value in enumerate(values) if index < len(headers)}
+        brief = _brief_from_weekly_excel_row(row)
+        if brief and brief.is_allowed_topic() and has_explicit_parties(brief) and not is_excluded_case(brief):
+            briefs.append(brief)
+    LOGGER.info("Loaded %s report candidates from latest weekly Excel: %s", len(briefs), workbook_path)
+    return briefs
+
+
 def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[CaseBrief]:
     if not raw_items:
         return []
@@ -388,9 +603,10 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
         if not case_name:
             continue
         completed_year = str(row.get("completed_year") or infer_completed_year(case_name, str(row.get("source_title") or ""), str(row.get("published_at") or "")))
-        is_completed = row.get("is_completed", infer_is_completed(case_name, str(row.get("source_title") or ""), str(row.get("why") or "")))
+        inferred_completed = infer_is_completed(case_name, str(row.get("source_title") or ""), str(row.get("why") or ""))
+        is_completed = parse_bool(row.get("is_completed"), default=inferred_completed)
         row["completed_year"] = completed_year
-        row["is_completed"] = str(bool(is_completed)).lower()
+        row["is_completed"] = str(is_completed).lower()
         rows.append(row)  # type: ignore[arg-type]
     return rows_to_briefs(rows)
 
@@ -436,13 +652,25 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
     selected_keys: set[str] = set()
     selected_category_counts: Counter[str] = Counter()
 
-    def score(b: CaseBrief) -> tuple[int, int, int, int, int]:
+    def score(b: CaseBrief) -> tuple[int, int, int, int, int, int, int, int, int, str]:
         selected_category_penalty = selected_category_counts[b.category] * 100
         existing_category_penalty = counts[b.category] + (2 if b.category == "SPAC" else 0)
         topic_rank = 0 if b.is_recent_completed() else 1
         domestic_rank = 0 if b.is_domestic else 1
         classic_penalty = 1 if b.is_classic else 0
-        return (selected_category_penalty, existing_category_penalty, topic_rank, domestic_rank, classic_penalty)
+        quality = report_candidate_priority(b)
+        return (
+            selected_category_penalty,
+            existing_category_penalty,
+            quality[0],
+            quality[1],
+            quality[2],
+            topic_rank,
+            domestic_rank,
+            classic_penalty,
+            quality[3],
+            quality[5],
+        )
 
     # First pass: prefer one case per category, starting from historically underrepresented folders.
     for category in sorted(CATEGORIES, key=lambda c: counts[c] + (2 if c == "SPAC" else 0)):
@@ -495,7 +723,19 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
         count,
         min_domestic,
     )
-    return selected[:count]
+    ordered = sorted(selected[:count], key=report_candidate_priority)
+    for order, brief in enumerate(ordered, start=1):
+        LOGGER.info(
+            "Report candidate order %s: ready=%s case=%s category=%s completed=%s value=%s url=%s",
+            order,
+            is_report_ready_candidate(brief),
+            brief.case_name,
+            brief.category,
+            brief.is_completed,
+            brief.deal_value or "-",
+            brief.source_url or "-",
+        )
+    return ordered
 
 
 def save_manifest(path: Path, briefs: list[CaseBrief]) -> None:
