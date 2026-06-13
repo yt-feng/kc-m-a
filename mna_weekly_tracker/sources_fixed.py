@@ -176,9 +176,6 @@ def resolve_news_link(link: str, *, title: str = "", publisher_url: str = "") ->
     unwrapped = unwrap_news_url(link, publisher_url="")
     if is_usable_article_url(unwrapped):
         return unwrapped
-    resolved = resolve_original_url(link)
-    if is_usable_article_url(resolved):
-        return resolved
     if title:
         cache_key = normalize_text(title)[:220]
         if cache_key in _TITLE_URL_RESOLVE_CACHE:
