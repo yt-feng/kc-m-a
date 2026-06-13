@@ -30,7 +30,7 @@ strip_heading_number = base.strip_heading_number
 trim_article = base.trim_article
 extract_research_fact_lines = base.extract_research_fact_lines
 
-COMPANY_SUFFIX = r"(?:股份有限公司|有限责任公司|科技有限公司|娱乐集团|有限公司|集团|公司)"
+COMPANY_SUFFIX = r"(?:股份有限公司|有限责任公司|科技有限公司|娱乐集团|有限公司|公司)"
 LEGAL_NAME_TAIL = r"(?:科技有限公司|股份有限公司|有限责任公司|娱乐集团|有限公司|集团|公司)"
 BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”(?:，[^）]+)?）(?!收购|并购|购买|出售|转让|受让|入股|控股|合并)([{CJK}A-Za-z0-9·&]{{0,12}}{LEGAL_NAME_TAIL})")
 DUP_NOTE_PATTERN = re.compile(r"(?P<note>（下称“[^”]+”(?:，[^）]+)?）)(?P=note)+")

@@ -190,7 +190,7 @@ def format_thousands(text: str) -> str:
 
 
 def normalize_text(text: str) -> str:
-    text = re.sub(r"[ \t]+", " ", str(text or "")).strip()
+    text = re.sub(r"[\s\u3000]+", " ", str(text or "")).strip()
     text = remove_cjk_alnum_spaces(text)
     text = normalize_fullwidth_punctuation(text)
     text = format_thousands(text)
