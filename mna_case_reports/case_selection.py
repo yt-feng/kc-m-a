@@ -62,6 +62,12 @@ RICH_DISCLOSURE_HINTS = (
     "重大资产重组报告书", "重组报告书", "交易报告书", "草案", "预案",
     "发行股份及支付现金", "协议转让", "控制权变更", "完成过户", "结果公告",
 )
+DETAIL_RICH_DISCLOSURE_HINTS = (
+    "要约收购报告书", "权益变动报告书", "详式权益变动", "收购报告书",
+    "重大资产重组报告书", "重组报告书", "交易报告书", "草案", "预案",
+    "发行股份及支付现金", "协议转让",
+)
+THIN_DISCLOSURE_HINTS = ("完成过户", "结果公告", "期限届满", "停牌公告", "提示性公告")
 
 
 @dataclass
@@ -206,7 +212,14 @@ def has_rich_disclosure_signal(brief: CaseBrief) -> bool:
     return any(token in text for token in RICH_DISCLOSURE_HINTS)
 
 
-def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int, str]:
+def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int, int, str]:
+    disclosure_text = "\n".join([brief.source_title, brief.why, brief.deal_status])
+    if any(token in disclosure_text for token in DETAIL_RICH_DISCLOSURE_HINTS):
+        disclosure_penalty = 0
+    elif any(token in disclosure_text for token in THIN_DISCLOSURE_HINTS):
+        disclosure_penalty = 2
+    else:
+        disclosure_penalty = 1
     completed_penalty = 0 if brief.is_completed or has_completed_signal(brief.deal_status) else 10
     url_penalty = 0 if has_usable_source_url(brief.source_url) else 8
     deal_signal = has_deal_value_signal("\n".join([brief.deal_value, brief.financial_highlights, brief.why, brief.source_title]))
@@ -222,7 +235,7 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
     if len(clean_cell(brief.seller_motivation)) < 15:
         rationale_penalty += 1
     classic_penalty = 2 if brief.is_classic else 0
-    return (completed_penalty, url_penalty, deal_penalty, rationale_penalty, classic_penalty, brief.case_name)
+    return (disclosure_penalty, completed_penalty, url_penalty, deal_penalty, rationale_penalty, classic_penalty, brief.case_name)
 
 
 def infer_parties_from_name(case_name: str) -> tuple[str, str]:
@@ -740,7 +753,7 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
     selected_keys: set[str] = set()
     selected_category_counts: Counter[str] = Counter()
 
-    def score(b: CaseBrief) -> tuple[int, int, int, int, int, int, int, int, int, int, str]:
+    def score(b: CaseBrief) -> tuple[int, int, int, int, int, int, int, int, int, int, int, str]:
         preflight_penalty = 0 if is_report_ready_candidate(b) else 20
         selected_category_penalty = selected_category_counts[b.category] * 100
         existing_category_penalty = counts[b.category] + (2 if b.category == "SPAC" else 0)
@@ -755,11 +768,12 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
             quality[0],
             quality[1],
             quality[2],
+            quality[3],
             topic_rank,
             domestic_rank,
             classic_penalty,
-            quality[3],
-            quality[5],
+            quality[4],
+            quality[6],
         )
 
     # First pass: prefer one case per category, starting from historically underrepresented folders.

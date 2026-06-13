@@ -87,16 +87,36 @@ def article_text(article: dict[str, object]) -> str:
 
 def compact_name(value: str) -> str:
     value = re.sub(r"（.*?）|\(.*?\)", "", value or "")
-    value = re.sub(r"股份有限公司|有限责任公司|有限公司|集团|控股|公司|Corporation|Inc\.|Inc|Ltd\.|Ltd|Limited|PLC", "", value, flags=re.I)
+    value = re.sub(
+        r"科技发展合伙企业|管理咨询合伙企业|合伙企业|有限合伙|股份有限公司|有限责任公司|有限公司|集团|控股|公司|"
+        r"Corporation|Inc\.|Inc|Ltd\.|Ltd|Limited|PLC",
+        "",
+        value,
+        flags=re.I,
+    )
     return value.strip()
+
+
+def name_aliases(name: str) -> set[str]:
+    compact = compact_name(name)
+    aliases = {name, compact}
+    if len(compact) >= 4:
+        aliases.add(compact[:4])
+        aliases.add(compact[-4:])
+        aliases.add(compact[:2] + compact[-2:])
+    if len(compact) >= 5:
+        aliases.add(compact[:5])
+        aliases.add(compact[-5:])
+    if len(compact) >= 6:
+        aliases.add(compact[:6])
+        aliases.add(compact[-6:])
+    return {alias for alias in aliases if len(alias) >= 3}
 
 
 def name_in_text(name: str, text: str) -> bool:
     if not name:
         return False
-    candidates = {name, compact_name(name)}
-    candidates = {x for x in candidates if len(x) >= 2}
-    return any(x in text for x in candidates)
+    return any(alias in text for alias in name_aliases(name))
 
 
 def infer_parties_from_case_name(case_name: str) -> tuple[str, str]:
