@@ -95,10 +95,20 @@ def main() -> None:
     else:
         LOGGER.info("Loading weekly report candidates from latest structured Excel")
         briefs = briefs_from_latest_weekly_workbook(Path(args.weekly_output_dir))
+        required_domestic = min(args.min_domestic, args.count)
         ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
         source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
-        LOGGER.info("Weekly Excel candidate pool: total=%s ready=%s source_ready=%s", len(briefs), ready_count, source_ready_count)
-        if ready_count < args.count or source_ready_count < args.count:
+        domestic_ready_count = sum(1 for brief in briefs if brief.is_domestic and is_report_ready_candidate(brief))
+        domestic_source_ready_count = sum(1 for brief in briefs if brief.is_domestic and is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
+        LOGGER.info(
+            "Weekly Excel candidate pool: total=%s ready=%s source_ready=%s domestic_ready=%s domestic_source_ready=%s",
+            len(briefs),
+            ready_count,
+            source_ready_count,
+            domestic_ready_count,
+            domestic_source_ready_count,
+        )
+        if ready_count < args.count or source_ready_count < args.count or domestic_source_ready_count < required_domestic:
             LOGGER.info("Summarizing raw candidates from latest weekly Excel because structured Excel source-ready pool is below requested count")
             excel_raw_items = raw_items_from_latest_weekly_workbook(Path(args.weekly_output_dir), max_items=args.max_raw_items)
             excel_raw_briefs = summarize_raw_items(excel_raw_items, target_count=max(pool_count * 3, 12))
@@ -106,7 +116,8 @@ def main() -> None:
             briefs.extend(excel_raw_briefs)
             ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
             source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
-        if ready_count < args.count or source_ready_count < args.count:
+            domestic_source_ready_count = sum(1 for brief in briefs if brief.is_domestic and is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
+        if ready_count < args.count or source_ready_count < args.count or domestic_source_ready_count < required_domestic:
             LOGGER.info("Collecting live weekly report candidates because Excel source-ready pool is below requested count")
             raw_items = lightweight_weekly_candidates(args.days, args.max_raw_items)
             live_briefs = summarize_raw_items(raw_items, target_count=max(pool_count * 3, 12))

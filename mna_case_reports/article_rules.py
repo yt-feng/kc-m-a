@@ -44,10 +44,10 @@ HYPOTHESIS_PATTERNS = (
     "could", "may ", "might", "possibly",
 )
 TIME_PATTERNS = ("2025", "2026", "2024", "2023", "交割", "完成", "签约", "公告", "过户", "协议", "closing", "closed")
-CONSIDERATION_PATTERNS = ("亿元", "亿美元", "万欧元", "亿欧元", "万元", "对价", "估值", "交易金额", "作价", "价格", "现金", "股份")
+CONSIDERATION_PATTERNS = ("亿元", "亿美元", "万欧元", "亿欧元", "万元", "元/股", "港元/股", "美元/股", "对价", "估值", "交易金额", "作价", "价格", "现金", "股份")
 FINANCIAL_PATTERNS = ("营收", "收入", "营业收入", "净利润", "毛利", "EBITDA", "现金流", "负债", "市值", "产能", "订单", "用户", "员工", "股权", "资源量", "储量")
 BUYER_MOTIVE_PATTERNS = ("买方", "收购方", "并购方", "购买", "收购目的", "战略目的", "补强", "整合", "协同", "控股", "并表")
-SELLER_MOTIVE_PATTERNS = ("卖方", "出售方", "标的方", "转让方", "被整合方", "退出", "出售股权", "出让", "接受", "承接", "私有化")
+SELLER_MOTIVE_PATTERNS = ("卖方", "出售方", "标的方", "转让方", "被整合方", "退出", "出售股权", "出让", "接受", "承接", "私有化", "预受要约", "接受要约", "现金要约", "协议转让", "减持", "股东账户")
 INTRO_PATTERNS = ("基本介绍", "主营", "主营业务", "业务", "收入", "净利润", "成立", "上市", "资产", "产品", "客户")
 CN_NUMS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
 
@@ -135,7 +135,9 @@ def remove_cjk_alnum_spaces(text: str) -> str:
 
 def normalize_fullwidth_punctuation(text: str) -> str:
     text = text.replace("“ ", "“").replace(" ”", "”").replace("‘ ", "‘").replace(" ’", "’")
-    for ascii_p, full_p in ((",", "，"), (";", "；"), (":", "："), ("?", "？"), ("!", "！")):
+    text = re.sub(rf"([{CJK}%％）】]),(?!\d)", r"\1，", text)
+    text = re.sub(rf"(?<!\d),([{CJK}])", r"，\1", text)
+    for ascii_p, full_p in ((";", "；"), (":", "："), ("?", "？"), ("!", "！")):
         text = re.sub(rf"([{CJK}0-9%％）】])\{ascii_p}", rf"\1{full_p}", text)
         text = re.sub(rf"\{ascii_p}([{CJK}])", rf"{full_p}\1", text)
     text = re.sub(rf"([{CJK}])\(", r"\1（", text)
@@ -452,7 +454,7 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
     if sum(1 for pattern in BUYER_MOTIVE_PATTERNS if pattern in text) < 3:
         issues.append("缺少并购方/买方购买理由，需要明确写出并购方为什么愿意买。")
     if sum(1 for pattern in SELLER_MOTIVE_PATTERNS if pattern in text) < 2:
-        issues.append("缺少标的方/出售方接受交易安排的原因，需要明确写出被并购方或转让方为什么愿意卖或接受整合。")
+        issues.append("缺少标的方/出售方接受交易安排的原因或客观安排依据，需要明确写出被并购方、转让方或预受要约股东为什么愿意卖、接受整合，或公开资料能够支撑的交易机制。")
     if acquirer and not name_in_text(acquirer, text):
         issues.append(f"正文必须包含并购方基本介绍：{acquirer}。")
     if target and not name_in_text(target, text):

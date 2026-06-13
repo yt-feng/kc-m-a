@@ -57,6 +57,11 @@ DEAL_VALUE_RE = re.compile(
     r"crore|million|billion|bn|mn)",
     re.I,
 )
+RICH_DISCLOSURE_HINTS = (
+    "要约收购报告书", "要约收购", "权益变动报告书", "详式权益变动", "收购报告书",
+    "重大资产重组报告书", "重组报告书", "交易报告书", "草案", "预案",
+    "发行股份及支付现金", "协议转让", "控制权变更", "完成过户", "结果公告",
+)
 
 
 @dataclass
@@ -196,11 +201,21 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
     return True
 
 
+def has_rich_disclosure_signal(brief: CaseBrief) -> bool:
+    text = "\n".join([brief.source_title, brief.why, brief.deal_status, brief.source_url])
+    return any(token in text for token in RICH_DISCLOSURE_HINTS)
+
+
 def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int, str]:
     completed_penalty = 0 if brief.is_completed or has_completed_signal(brief.deal_status) else 10
     url_penalty = 0 if has_usable_source_url(brief.source_url) else 8
     deal_signal = has_deal_value_signal("\n".join([brief.deal_value, brief.financial_highlights, brief.why, brief.source_title]))
-    deal_penalty = 0 if deal_signal else (2 if is_authoritative_source_url(brief.source_url) else 5)
+    if deal_signal:
+        deal_penalty = 0
+    elif is_authoritative_source_url(brief.source_url) and has_rich_disclosure_signal(brief):
+        deal_penalty = 1
+    else:
+        deal_penalty = 2 if is_authoritative_source_url(brief.source_url) else 5
     rationale_penalty = 0
     if len(clean_cell(brief.buyer_motivation or brief.why)) < 15:
         rationale_penalty += 1
@@ -725,7 +740,8 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
     selected_keys: set[str] = set()
     selected_category_counts: Counter[str] = Counter()
 
-    def score(b: CaseBrief) -> tuple[int, int, int, int, int, int, int, int, int, str]:
+    def score(b: CaseBrief) -> tuple[int, int, int, int, int, int, int, int, int, int, str]:
+        preflight_penalty = 0 if is_report_ready_candidate(b) else 20
         selected_category_penalty = selected_category_counts[b.category] * 100
         existing_category_penalty = counts[b.category] + (2 if b.category == "SPAC" else 0)
         topic_rank = 0 if b.is_recent_completed() else 1
@@ -733,6 +749,7 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
         classic_penalty = 1 if b.is_classic else 0
         quality = report_candidate_priority(b)
         return (
+            preflight_penalty,
             selected_category_penalty,
             existing_category_penalty,
             quality[0],
@@ -768,13 +785,18 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
         counts[brief.category] += 1
 
     domestic_now = sum(1 for x in selected if x.is_domestic)
-    if domestic_now < min_domestic:
+    domestic_backup_target = min(count, max(min_domestic, min_domestic + int(os.getenv("REPORT_DOMESTIC_BACKUP_CANDIDATES", "5")))) if min_domestic > 0 else 0
+    if domestic_now < domestic_backup_target:
         for brief in sorted([b for b in deduped if b.is_domestic and not keys_overlap(case_identity_keys(b) or {b.key()}, selected_keys)], key=score):
-            if domestic_now >= min_domestic:
+            if domestic_now >= domestic_backup_target:
                 break
             replace_indexes = sorted(
                 [i for i, item in enumerate(selected) if not item.is_domestic],
-                key=lambda i: selected_category_counts[selected[i].category],
+                key=lambda i: (
+                    selected_category_counts[selected[i].category],
+                    not is_report_ready_candidate(selected[i]),
+                    report_candidate_priority(selected[i]),
+                ),
                 reverse=True,
             )
             if not replace_indexes:
