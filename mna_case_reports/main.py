@@ -20,6 +20,7 @@ from .case_selection import (
     has_usable_source_url,
     is_report_ready_candidate,
     lightweight_weekly_candidates,
+    raw_items_from_latest_weekly_workbook,
     save_manifest,
     seed_briefs,
     summarize_raw_items,
@@ -97,6 +98,14 @@ def main() -> None:
         ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
         source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
         LOGGER.info("Weekly Excel candidate pool: total=%s ready=%s source_ready=%s", len(briefs), ready_count, source_ready_count)
+        if ready_count < args.count or source_ready_count < args.count:
+            LOGGER.info("Summarizing raw candidates from latest weekly Excel because structured Excel source-ready pool is below requested count")
+            excel_raw_items = raw_items_from_latest_weekly_workbook(Path(args.weekly_output_dir), max_items=args.max_raw_items)
+            excel_raw_briefs = summarize_raw_items(excel_raw_items, target_count=max(pool_count * 3, 12))
+            LOGGER.info("Raw weekly Excel candidate pool: raw=%s summarized=%s", len(excel_raw_items), len(excel_raw_briefs))
+            briefs.extend(excel_raw_briefs)
+            ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
+            source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
         if ready_count < args.count or source_ready_count < args.count:
             LOGGER.info("Collecting live weekly report candidates because Excel source-ready pool is below requested count")
             raw_items = lightweight_weekly_candidates(args.days, args.max_raw_items)

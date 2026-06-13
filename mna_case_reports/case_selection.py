@@ -581,6 +581,50 @@ def briefs_from_latest_weekly_workbook(output_dir: Path) -> list[CaseBrief]:
     return briefs
 
 
+def raw_items_from_latest_weekly_workbook(output_dir: Path, max_items: int = 220) -> list[RawItem]:
+    workbook_path = latest_weekly_workbook(output_dir)
+    if not workbook_path:
+        return []
+    try:
+        workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+        if "原始候选" not in workbook.sheetnames:
+            return []
+        sheet = workbook["原始候选"]
+        rows = sheet.iter_rows(values_only=True)
+        headers = [clean_cell(value) for value in next(rows, [])]
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to read raw candidates from weekly Excel workbook: %s error=%s", workbook_path, exc)
+        return []
+
+    raw_items: list[RawItem] = []
+    seen: set[str] = set()
+    for values in rows:
+        row = {headers[index]: values[index] for index in range(min(len(headers), len(values)))}
+        title = clean_cell(row.get("标题"))
+        url = unwrap_news_url(clean_cell(row.get("URL")))
+        if not title or not is_usable_article_url(url):
+            continue
+        item = RawItem(
+            title=title,
+            url=url,
+            source_name=clean_cell(row.get("来源名称")),
+            source_url="",
+            published_at=clean_cell(row.get("发布时间")),
+            summary=clean_cell(row.get("摘要")),
+            region_hint=clean_cell(row.get("地区")) or "中国",
+            query=clean_cell(row.get("查询词")),
+        )
+        key = item.stable_key()
+        if key in seen:
+            continue
+        seen.add(key)
+        raw_items.append(item)
+        if len(raw_items) >= max_items:
+            break
+    LOGGER.info("Loaded %s raw report candidates from latest weekly Excel: %s", len(raw_items), workbook_path)
+    return raw_items
+
+
 def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[CaseBrief]:
     if not raw_items:
         return []
@@ -589,9 +633,10 @@ def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[Cas
     prompt_parts = [
         "从候选新闻/公告中筛选适合写成并购案例分析报告的交易。",
         f"选题规则：{TOPIC_SELECTION_RULES}",
-        "优先选择并购方和并购标的名称明确、交易金额或估值线索明确的案例。",
-        "严禁选择标的名称为未披露、未知、不详、某标的、标的资产、标的公司的案例。",
-        "优先中国案例；交易主体、交易事件、完成时间、交易对价和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、未完成或终止交易。",
+        "优先选择并购方和并购标的名称明确、交易金额、估值、股权比例或支付方式线索明确的案例。",
+        f"严禁选择并购方或标的名称包含这些模糊词的案例：{'、'.join(VAGUE_PARTY_TERMS)}。",
+        "优先中国案例和已完成案例；若本周已完成案例不足，可选择已签署、要约收购、协议转让、控制权变更或重大资产重组等官方披露明确且金额/比例/支付方式清楚的进行中案例。",
+        "交易主体、交易事件、交易时间、交易对价或股权比例和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、终止交易和交易主体不明案例。",
     ]
     if exclude:
         prompt_parts.append(f"不要选择包含这些主体或关键词的案例：{exclude}。")
