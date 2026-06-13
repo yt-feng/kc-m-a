@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
 
-from mna_weekly_tracker.sources_fixed import is_aggregator_url, unwrap_news_url
+from mna_weekly_tracker.sources_fixed import is_usable_article_url, unwrap_news_url
 from mna_weekly_tracker.sources_rich import RawItem, fetch_all_candidates
 
 from .case_pool import EXTENDED_CASE_POOL
@@ -30,15 +30,6 @@ PARTY_SUFFIX_RE = re.compile(
     re.I,
 )
 PLACEHOLDER_TEXT = {"", "-", "无", "未知", "不详", "未披露", "n/a", "na", "none", "null"}
-HOMEPAGE_ALLOWED_DOMAINS = (
-    "cninfo.com.cn",
-    "static.cninfo.com.cn",
-    "sse.com.cn",
-    "szse.cn",
-    "bse.cn",
-    "hkexnews.hk",
-    "sec.gov",
-)
 DEAL_NUMBER_RE = re.compile(
     r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|％|亿元|亿美元|亿港元|万港元|万元|美元|港元|元|股|股份|股权|"
     r"crore|million|billion|bn|mn)?",
@@ -152,19 +143,7 @@ def has_completed_signal(value: str | None) -> bool:
 
 def has_usable_source_url(url: str | None) -> bool:
     cleaned = unwrap_news_url(clean_cell(url))
-    if not cleaned or is_placeholder(cleaned) or is_aggregator_url(cleaned):
-        return False
-    try:
-        parsed = re.match(r"^https?://([^/?#]+)([^?#]*)", cleaned, re.I)
-        if not parsed:
-            return False
-        host = parsed.group(1).lower().replace("www.", "")
-        path = parsed.group(2) or ""
-    except Exception:  # noqa: BLE001
-        return False
-    if path in {"", "/"} and not any(domain in host for domain in HOMEPAGE_ALLOWED_DOMAINS):
-        return False
-    return True
+    return not is_placeholder(cleaned) and is_usable_article_url(cleaned)
 
 
 def is_report_ready_candidate(brief: CaseBrief) -> bool:
@@ -181,7 +160,7 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
     ])
     if not has_deal_value_signal(evidence_text):
         return False
-    if brief.is_classic and not has_usable_source_url(brief.source_url):
+    if not has_usable_source_url(brief.source_url):
         return False
     return True
 
@@ -422,7 +401,7 @@ def rows_to_briefs(rows: list[dict[str, str]], *, default_classic: bool = False)
         else:
             is_classic = str(is_classic_raw).lower() == "true"
         source_url = unwrap_news_url(str(row.get("source_url") or ""))
-        if is_aggregator_url(source_url):
+        if not is_usable_article_url(source_url):
             source_url = ""
         brief = CaseBrief(
             case_name=case_name,
@@ -515,7 +494,7 @@ def _brief_from_weekly_excel_row(row: dict[str, object]) -> CaseBrief | None:
     remark = clean_cell(row.get("备注"))
     source_name = clean_cell(row.get("来源名称"))
     source_url = unwrap_news_url(clean_cell(row.get("URL")))
-    if is_aggregator_url(source_url):
+    if not is_usable_article_url(source_url):
         source_url = ""
     case_name = f"{acquirer}收购{target}"
     if "SPAC" in category or any(token in intro.lower() for token in ("spac", "de-spac", "despac")):

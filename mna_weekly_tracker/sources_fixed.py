@@ -33,6 +33,7 @@ BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 USER_AGENT = "Mozilla/5.0 AppleWebKit/537.36 Chrome/124 Safari/537.36"
 GOOGLE_NEWS_HOSTS = {"news.google.com", "news.url.google.com"}
 BING_NEWS_HOSTS = {"www.bing.com", "bing.com", "cn.bing.com"}
+SOGOU_WRAPPER_HOSTS = {"weixin.sogou.com", "fankui.sogou.com"}
 WRAPPER_HOSTS = (
     "news.google.com",
     "news.url.google.com",
@@ -42,6 +43,7 @@ WRAPPER_HOSTS = (
     "bing.com",
     "cn.bing.com",
     "weixin.sogou.com",
+    "fankui.sogou.com",
 )
 URL_RESOLVE_CACHE: dict[str, str] = {}
 MAX_TITLE_URL_RESOLVES = int(os.getenv("MNA_MAX_TITLE_URL_RESOLVES", "10"))
@@ -92,6 +94,14 @@ def _url_host(url: str) -> str:
     return urllib.parse.urlsplit(url or "").netloc.lower()
 
 
+def is_http_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(url or "")
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
 def is_likely_homepage_url(url: str) -> bool:
     try:
         parsed = urllib.parse.urlsplit(url or "")
@@ -106,7 +116,7 @@ def is_likely_homepage_url(url: str) -> bool:
 
 
 def is_usable_article_url(url: str) -> bool:
-    return bool(url) and not is_aggregator_url(url) and not is_likely_homepage_url(url)
+    return is_http_url(url) and not is_aggregator_url(url) and not is_likely_homepage_url(url)
 
 
 def _first_query_url(url: str, names: tuple[str, ...]) -> str:
@@ -115,7 +125,7 @@ def _first_query_url(url: str, names: tuple[str, ...]) -> str:
     for name in names:
         for value in query.get(name, []):
             value = urllib.parse.unquote(value or "").strip()
-            if value.startswith(("http://", "https://")) and not is_likely_homepage_url(value):
+            if is_usable_article_url(value):
                 return value
     return ""
 
@@ -132,14 +142,20 @@ def _decode_google_news_token(token: str) -> str:
     urls = re.findall(r"https?://[^\x00-\x20\"'<>]+", text)
     for candidate in urls:
         candidate = urllib.parse.unquote(candidate).strip()
-        if candidate and _url_host(candidate) not in GOOGLE_NEWS_HOSTS and not is_likely_homepage_url(candidate):
+        if is_usable_article_url(candidate):
             return candidate
     return ""
 
 
 def is_aggregator_url(url: str) -> bool:
     host = _url_host(url)
-    return host in GOOGLE_NEWS_HOSTS or (host in BING_NEWS_HOSTS and "news" in urllib.parse.urlsplit(url or "").path.lower())
+    parsed = urllib.parse.urlsplit(url or "")
+    path = parsed.path.lower()
+    if host in GOOGLE_NEWS_HOSTS or host in SOGOU_WRAPPER_HOSTS:
+        return True
+    if host in {"www.google.com", "google.com"} and path.startswith("/url"):
+        return True
+    return host in BING_NEWS_HOSTS and ("news" in path or path.startswith("/search"))
 
 
 def unwrap_news_url(url: str, *, publisher_url: str = "") -> str:
@@ -314,7 +330,7 @@ def is_wrapper_url(url: str) -> bool:
         host = urllib.parse.urlsplit(url).netloc.lower()
     except ValueError:
         return False
-    return any(host == wrapper or host.endswith("." + wrapper) for wrapper in WRAPPER_HOSTS)
+    return is_aggregator_url(url) or any(host == wrapper or host.endswith("." + wrapper) for wrapper in WRAPPER_HOSTS)
 
 
 def url_from_query_params(url: str) -> str:
@@ -326,7 +342,7 @@ def url_from_query_params(url: str) -> str:
     for key in ("url", "u", "q", "target", "to"):
         for value in params.get(key, []):
             candidate = urllib.parse.unquote(value).strip()
-            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate) and not is_likely_homepage_url(candidate):
+            if is_usable_article_url(candidate):
                 return candidate
     return ""
 
@@ -337,11 +353,11 @@ def url_from_html(html_text: str) -> str:
         node = soup.select_one(selector)
         if node:
             candidate = (node.get(attr) or "").strip()
-            if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate) and not is_likely_homepage_url(candidate):
+            if is_usable_article_url(candidate):
                 return candidate
     for a in soup.select("a[href]"):
         candidate = urllib.parse.unquote(a.get("href") or "").strip()
-        if candidate.startswith(("http://", "https://")) and not is_wrapper_url(candidate) and not is_likely_homepage_url(candidate):
+        if is_usable_article_url(candidate):
             return candidate
     return ""
 
@@ -358,13 +374,14 @@ def resolve_original_url(url: str) -> str:
         URL_RESOLVE_CACHE[url] = direct
         return direct
     if not is_wrapper_url(url):
-        URL_RESOLVE_CACHE[url] = url
-        return url
-    resolved = url
+        resolved = url if is_usable_article_url(url) else ""
+        URL_RESOLVE_CACHE[url] = resolved
+        return resolved
+    resolved = ""
     try:
         response = request_with_retries("GET", url, retries=0, timeout=8, allow_redirects=True)
         final_url = response.url or url
-        if final_url.startswith(("http://", "https://")) and not is_wrapper_url(final_url) and not is_likely_homepage_url(final_url):
+        if is_usable_article_url(final_url):
             resolved = final_url
         else:
             html_candidate = url_from_html(response.text)
@@ -449,9 +466,10 @@ def rss_items(url: str, query: str, start: datetime, end: datetime, *, source_na
             except (TypeError, ValueError, OverflowError):
                 dt = parse_datetime(pub_date)
                 published = dt.isoformat() if dt else pub_date
-        if title and link and in_window(published, start, end):
+        resolved_link = resolve_original_url(link)
+        if title and resolved_link and in_window(published, start, end):
             source = f"{source_name} / {publisher}" if publisher else source_name
-            out.append(RawItem(title, resolve_original_url(link), source, source_url, published, summary, region_hint, query))
+            out.append(RawItem(title, resolved_link, source, source_url, published, summary, region_hint, query))
     return out
 
 
@@ -510,8 +528,9 @@ def fetch_sogou_weixin(query: str, start: datetime, end: datetime, *, source_nam
         time_text = strip_html(" ".join(x.get_text(" ") for x in node.select("span.s2, .s2")))
         dt = parse_relative_time(time_text, now=end)
         published = dt.isoformat() if dt else ""
-        if title and link and in_window(published, start, end):
-            out.append(RawItem(title, resolve_original_url(link), source_name, source_url, published, summary, "中国/微信", query))
+        resolved_link = resolve_original_url(link)
+        if title and resolved_link and in_window(published, start, end):
+            out.append(RawItem(title, resolved_link, source_name, source_url, published, summary, "中国/微信", query))
     return out
 
 

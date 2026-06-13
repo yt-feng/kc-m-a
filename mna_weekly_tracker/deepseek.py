@@ -13,7 +13,7 @@ import requests
 
 from .config import CATEGORIES, CATEGORY_GUIDE, OUTPUT_COLUMNS, chunked
 from .sources import RawItem, normalize_text
-from .sources_fixed import is_aggregator_url, is_likely_homepage_url, is_usable_article_url, unwrap_news_url
+from .sources_fixed import is_aggregator_url, is_usable_article_url, unwrap_news_url
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -77,9 +77,12 @@ def deepseek_chat(messages: list[dict[str, str]], *, model: str | None = None, t
 
 
 def compact_item(item: RawItem) -> dict[str, str]:
+    url = unwrap_news_url(str(item.url or ""))
+    if not is_usable_article_url(url):
+        url = ""
     return {
         "title": str(item.title or "")[:180],
-        "url": unwrap_news_url(str(item.url or ""))[:500],
+        "url": url[:500],
         "source_name": str(item.source_name or "")[:80],
         "published_at": str(item.published_at or "")[:40],
         "summary": str(item.summary or "")[:260],
@@ -148,7 +151,7 @@ def normalize_case(row: dict[str, Any]) -> dict[str, str]:
             value = "-"
         normalized[col] = str(value).strip()
     normalized["URL"] = unwrap_news_url(normalized.get("URL", ""))
-    if is_aggregator_url(normalized["URL"]) or is_likely_homepage_url(normalized["URL"]):
+    if not is_usable_article_url(normalized["URL"]):
         normalized["URL"] = "-"
     if normalized.get("案例分类") not in CATEGORIES:
         normalized["案例分类"] = infer_category_from_text(" ".join(normalized.values()))
