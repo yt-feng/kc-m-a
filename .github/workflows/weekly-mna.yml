@@ -32,6 +32,7 @@ jobs:
       MNA_OUTPUT_DIR: outputs
       MAX_RAW_ITEMS: "450"
       MAX_STRUCTURED_CASES: "120"
+      MNA_MAX_TITLE_URL_RESOLVES: "10"
       DAYS: ${{ github.event.inputs.days || '7' }}
     steps:
       - name: Checkout repository

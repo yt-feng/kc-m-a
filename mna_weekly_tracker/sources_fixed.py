@@ -44,7 +44,7 @@ WRAPPER_HOSTS = (
     "weixin.sogou.com",
 )
 URL_RESOLVE_CACHE: dict[str, str] = {}
-MAX_TITLE_URL_RESOLVES = int(os.getenv("MNA_MAX_TITLE_URL_RESOLVES", "60"))
+MAX_TITLE_URL_RESOLVES = int(os.getenv("MNA_MAX_TITLE_URL_RESOLVES", "10"))
 _TITLE_URL_RESOLVE_CACHE: dict[str, str] = {}
 _TITLE_URL_RESOLVE_ATTEMPTS = 0
 
