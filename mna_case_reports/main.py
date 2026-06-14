@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import signal
 import traceback
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from queue import Empty
 from zoneinfo import ZoneInfo
 
 from .case_selection import (
@@ -113,6 +115,44 @@ def max_generation_attempts(requested_count: int) -> int:
 
 def per_candidate_timeout_seconds() -> int:
     return int(os.getenv("REPORT_PER_CANDIDATE_TIMEOUT_SECONDS", "900"))
+
+
+def _generate_article_worker(brief: CaseBrief, queue: multiprocessing.Queue) -> None:
+    try:
+        article = generate_article(brief)
+        queue.put({"ok": True, "article": article})
+    except Exception as exc:  # noqa: BLE001
+        queue.put({"ok": False, "error": str(exc), "traceback": traceback.format_exc()})
+
+
+def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dict[str, object]:
+    if timeout_seconds <= 0:
+        return generate_article(brief)
+    ctx = multiprocessing.get_context(os.getenv("REPORT_WORKER_START_METHOD", "fork"))
+    result_queue: multiprocessing.Queue = ctx.Queue()
+    process = ctx.Process(target=_generate_article_worker, args=(brief, result_queue), daemon=True)
+    process.start()
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join(10)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+        raise CandidateTimeoutError(f"Candidate worker timed out after {timeout_seconds}s: {brief.case_name}")
+    try:
+        result = result_queue.get_nowait()
+    except Empty as exc:
+        raise RuntimeError(f"Candidate worker exited without returning a result: {brief.case_name} exitcode={process.exitcode}") from exc
+    if result.get("ok"):
+        article = result.get("article")
+        if not isinstance(article, dict):
+            raise RuntimeError(f"Candidate worker returned invalid article payload: {brief.case_name}")
+        return article
+    error = str(result.get("error") or "unknown worker error")
+    tb = str(result.get("traceback") or "")
+    LOGGER.debug("Worker traceback for %s:\n%s", brief.case_name, tb)
+    raise RuntimeError(error)
 
 
 def domestic_written(briefs: list[CaseBrief]) -> int:
@@ -241,8 +281,7 @@ def main() -> None:
             "failures": failures,
         })
         try:
-            with candidate_timeout(candidate_timeout_seconds, brief.case_name):
-                article = generate_article(brief)
+            article = generate_article_with_timeout(brief, candidate_timeout_seconds)
             path = write_docx(article, category=brief.category, output_root=output_root, run_label=run_label)
             written.append(str(path))
             written_briefs.append(brief)
