@@ -65,7 +65,16 @@ def write_progress(path: Path, payload: dict[str, object]) -> None:
 def candidate_pool_count(requested_count: int) -> int:
     extra = int(os.getenv("REPORT_EXTRA_CANDIDATES", "8"))
     multiplier = int(os.getenv("REPORT_CANDIDATE_MULTIPLIER", "3"))
-    return max(requested_count, requested_count + extra, requested_count * multiplier)
+    pool = max(requested_count, requested_count + extra, requested_count * multiplier)
+    cap = int(os.getenv("REPORT_CANDIDATE_POOL_MAX", "0"))
+    return min(pool, cap) if cap > 0 else pool
+
+
+def max_generation_attempts(requested_count: int) -> int:
+    configured = int(os.getenv("REPORT_MAX_GENERATION_ATTEMPTS", "0"))
+    if configured > 0:
+        return configured
+    return max(requested_count + 3, requested_count * 3)
 
 
 def domestic_written(briefs: list[CaseBrief]) -> int:
@@ -88,6 +97,7 @@ def main() -> None:
     output_root = Path(args.output_root)
     ensure_category_dirs(output_root)
     pool_count = candidate_pool_count(args.count)
+    max_attempts = max_generation_attempts(args.count)
 
     if args.mode == "backfill":
         LOGGER.info("Discovering backfill cases")
@@ -144,6 +154,9 @@ def main() -> None:
     attempted = 0
     for index, brief in enumerate(selected, start=1):
         if len(written) >= args.count:
+            break
+        if attempted >= max_attempts:
+            LOGGER.warning("Stopping report generation after %s attempts for requested_count=%s; written=%s", attempted, args.count, len(written))
             break
         if not should_try_candidate(brief, written_briefs=written_briefs, requested_count=args.count, min_domestic=effective_min_domestic):
             LOGGER.info("Skipping candidate because remaining slots are reserved for domestic reports: %s [%s]", brief.case_name, brief.category)

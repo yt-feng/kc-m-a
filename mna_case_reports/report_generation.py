@@ -120,7 +120,8 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
     article = postprocess_article(article, brief)
     best_article = article
     best_score = _length_score(article)
-    for attempt in range(3):
+    max_length_rewrites = int(os.getenv("REPORT_LENGTH_REWRITE_REVISIONS", "2"))
+    for attempt in range(max_length_rewrites):
         length = chinese_length(article_text(article))
         if MIN_CHARS <= length <= MAX_CHARS:
             return article
