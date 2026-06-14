@@ -124,7 +124,10 @@ def _generate_article_worker(brief: CaseBrief, queue: multiprocessing.Queue) -> 
         article = generate_article(brief)
         queue.put({"type": "result", "ok": True, "article": article})
     except Exception as exc:  # noqa: BLE001
-        queue.put({"type": "result", "ok": False, "error": str(exc), "traceback": traceback.format_exc()})
+        tb = traceback.format_exc()
+        print(f"WORKER_EXCEPTION case={brief.case_name} error={str(exc)[:1000]}", flush=True)
+        print(tb, flush=True)
+        queue.put({"type": "result", "ok": False, "error": str(exc), "traceback": tb})
 
 
 def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dict[str, object]:
@@ -185,7 +188,11 @@ def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dic
         return article
     error = str(result.get("error") or "unknown worker error")
     tb = str(result.get("traceback") or "")
-    LOGGER.debug("Worker traceback for %s:\n%s", brief.case_name, tb)
+    action_notice(f"candidate_worker_error case={brief.case_name} error={error[:900]}")
+    if tb:
+        print(f"WORKER_TRACEBACK case={brief.case_name}", flush=True)
+        print(tb, flush=True)
+    LOGGER.error("Worker traceback for %s:\n%s", brief.case_name, tb)
     raise RuntimeError(error)
 
 
