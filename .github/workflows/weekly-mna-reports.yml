@@ -26,12 +26,20 @@ on:
         description: "Skip N selected cases for batched backfill"
         required: false
         default: "0"
+      max_attempts:
+        description: "Maximum candidates to try. Use 1 for a focused single-case smoke test."
+        required: false
+        default: "0"
+      candidate_pool_max:
+        description: "Maximum selected candidate pool size. Use 1 with max_attempts=1 for a single-case smoke test."
+        required: false
+        default: "0"
 
 permissions:
   contents: write
 
 concurrency:
-  group: weekly-mna-case-reports-${{ github.ref }}
+  group: weekly-mna-case-reports-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -53,6 +61,8 @@ jobs:
       REPORT_MAX_REVISIONS: "1"
       REPORT_LENGTH_REWRITE_REVISIONS: "1"
       REPORT_FINAL_REPAIR_REVISIONS: "1"
+      REPORT_MAX_GENERATION_ATTEMPTS: ${{ github.event.inputs.max_attempts || '0' }}
+      REPORT_CANDIDATE_POOL_MAX: ${{ github.event.inputs.candidate_pool_max || '0' }}
       REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: "300"
       REPORT_WORKER_HEARTBEAT_SECONDS: "30"
       REPORT_MODEL_TIMEOUT_SECONDS: "90"
