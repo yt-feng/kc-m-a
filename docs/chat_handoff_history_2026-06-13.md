@@ -436,7 +436,9 @@ commit：`62040c55439e07c74eceb75f3499233ec3b1c2e9`
 - 已继续修复：每个候选默认15分钟硬超时，超时后记录失败并切换下一个候选；Action日志会输出`candidate_start/candidate_failed/candidate_success`以及`collect_research/fact_pack/narrative_plan/article_draft/revision/length_rewrite/final_repair`等阶段notice，避免再次黑箱等待。
 - 失败后扩展研究默认关闭：原逻辑在候选失败后可能重新扩展搜索并再跑一遍完整生成链路，导致单候选耗时翻倍。后续只有显式设置`REPORT_EXPAND_ON_FAILURE=1`才启用。
 - 单篇选题改为`readiness_first`：`count=1`时不再先做类别均衡，而是按是否可写、是否已完成、交易条款线索和原始来源质量排序。已完成且官方PDF披露的嘉美包装要约收购会优先于进行中但尚需审批的厚披露候选，便于先产出一份可检查报告。
-- run `27494411243`显示`signal.alarm`仍不足以打断当前阻塞点，因此已取消并继续升级为子进程级候选超时：每个候选在独立worker进程中生成，父进程到15分钟直接terminate/kill该worker并切换候选。这能覆盖requests、PDF解析或模型调用卡死等普通signal无法打断的情况。
+- run `27494411243`显示`signal.alarm`仍不足以打断当前阻塞点，因此已取消并继续升级为子进程级候选超时：每个候选在独立worker进程中生成，父进程到超时时直接terminate/kill该worker并切换候选。这能覆盖requests、PDF解析或模型调用卡死等普通signal无法打断的情况。
+- 子进程worker会把阶段事件通过队列发回父进程，由父进程输出Action notice；父进程还会每30秒输出`candidate_heartbeat`。报告Action当前配置为单候选5分钟硬超时、单次DeepSeek请求90秒超时，便于先快速产出或快速暴露具体卡点。
+- 报告Action的展示、artifact和提交范围已改为“本次run新生成的DOCX和manifest”，不再打印或上传整个历史`case_reports`目录；单篇测试产物应只包含一份报告和本次校验/进度JSON。
 
 
 ## 作者补充

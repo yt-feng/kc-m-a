@@ -27,10 +27,19 @@ from .narrative_generation import NarrativePlan, build_narrative_plan
 from .research import collect_research_context
 
 LOGGER = logging.getLogger(__name__)
+PROGRESS_QUEUE: Any = None
+
+
+def set_progress_queue(queue: Any | None) -> None:
+    global PROGRESS_QUEUE
+    PROGRESS_QUEUE = queue
 
 
 def action_notice(message: str) -> None:
     safe = str(message).replace("\n", " ")[:1000]
+    if PROGRESS_QUEUE is not None:
+        PROGRESS_QUEUE.put({"type": "event", "message": safe})
+        return
     if os.getenv("GITHUB_ACTIONS") == "true":
         print(f"::notice::{safe}", flush=True)
     else:

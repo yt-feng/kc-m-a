@@ -8,6 +8,7 @@ import logging
 import multiprocessing
 import os
 import signal
+import time
 import traceback
 from contextlib import contextmanager
 from datetime import datetime
@@ -31,7 +32,7 @@ from .case_selection import (
 )
 from .config import CATEGORY_FOLDER_NAMES, CATEGORIES
 from .docx_writer import write_docx
-from .report_generation import generate_article
+from .report_generation import generate_article, set_progress_queue
 
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -119,31 +120,64 @@ def per_candidate_timeout_seconds() -> int:
 
 def _generate_article_worker(brief: CaseBrief, queue: multiprocessing.Queue) -> None:
     try:
+        set_progress_queue(queue)
         article = generate_article(brief)
-        queue.put({"ok": True, "article": article})
+        queue.put({"type": "result", "ok": True, "article": article})
     except Exception as exc:  # noqa: BLE001
-        queue.put({"ok": False, "error": str(exc), "traceback": traceback.format_exc()})
+        queue.put({"type": "result", "ok": False, "error": str(exc), "traceback": traceback.format_exc()})
 
 
 def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dict[str, object]:
     if timeout_seconds <= 0:
         return generate_article(brief)
+    heartbeat_seconds = int(os.getenv("REPORT_WORKER_HEARTBEAT_SECONDS", "30"))
     ctx = multiprocessing.get_context(os.getenv("REPORT_WORKER_START_METHOD", "fork"))
     result_queue: multiprocessing.Queue = ctx.Queue()
     process = ctx.Process(target=_generate_article_worker, args=(brief, result_queue), daemon=True)
     process.start()
-    process.join(timeout_seconds)
-    if process.is_alive():
-        process.terminate()
-        process.join(10)
-        if process.is_alive():
-            process.kill()
-            process.join(5)
-        raise CandidateTimeoutError(f"Candidate worker timed out after {timeout_seconds}s: {brief.case_name}")
-    try:
-        result = result_queue.get_nowait()
-    except Empty as exc:
-        raise RuntimeError(f"Candidate worker exited without returning a result: {brief.case_name} exitcode={process.exitcode}") from exc
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    last_heartbeat = 0.0
+    result: dict[str, object] | None = None
+    while True:
+        now = time.monotonic()
+        elapsed = int(now - started)
+        if elapsed - last_heartbeat >= heartbeat_seconds:
+            last_heartbeat = elapsed
+            action_notice(f"candidate_heartbeat case={brief.case_name} elapsed_s={elapsed} timeout_s={timeout_seconds} alive={process.is_alive()}")
+        timeout = max(0.2, min(2.0, deadline - now))
+        try:
+            message = result_queue.get(timeout=timeout)
+        except Empty:
+            message = None
+        if isinstance(message, dict):
+            if message.get("type") == "event":
+                action_notice(str(message.get("message") or "worker_event"))
+            elif message.get("type") == "result":
+                result = message
+                break
+        if not process.is_alive():
+            break
+        if time.monotonic() >= deadline:
+            process.terminate()
+            process.join(10)
+            if process.is_alive():
+                process.kill()
+                process.join(5)
+            raise CandidateTimeoutError(f"Candidate worker timed out after {timeout_seconds}s: {brief.case_name}")
+
+    process.join(5)
+    while True:
+        try:
+            message = result_queue.get_nowait()
+        except Empty:
+            break
+        if isinstance(message, dict) and message.get("type") == "event":
+            action_notice(str(message.get("message") or "worker_event"))
+        elif isinstance(message, dict) and message.get("type") == "result" and result is None:
+            result = message
+    if result is None:
+        raise RuntimeError(f"Candidate worker exited without returning a result: {brief.case_name} exitcode={process.exitcode}")
     if result.get("ok"):
         article = result.get("article")
         if not isinstance(article, dict):
