@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any
 
 from .article_quality import assess_quality
@@ -21,7 +22,7 @@ from .article_rules_extra import (
 )
 from .case_selection import CaseBrief
 from .config import CATEGORY_GUIDE, REFERENCE_STYLE, STYLE_RULES, TOPIC_SELECTION_RULES
-from .deepseek_client import chat_json
+from .deepseek_client import DeepSeekError, chat_json
 from .fact_pack import FactPack, build_fact_pack
 from .narrative_generation import NarrativePlan, build_narrative_plan
 from .research import collect_research_context
@@ -59,18 +60,72 @@ def _article_provider() -> str:
     return (os.getenv("REPORT_ARTICLE_MODEL_PROVIDER") or "").strip().lower()
 
 
-def _article_model_name() -> str:
+def _article_model_name(provider: str | None = None) -> str:
+    provider_name = (provider or _article_provider()).strip().lower()
+    if provider_name.startswith("deepseek"):
+        return (os.getenv("REPORT_ARTICLE_DEEPSEEK_MODEL") or "deepseek-v4-pro").strip()
     return (os.getenv("REPORT_ARTICLE_MODEL") or "gpt-5.5").strip()
 
 
 def _use_article_model() -> bool:
     provider = _article_provider()
-    if provider in ("", "deepseek", "default", "none", "off", "0"):
+    if provider in ("", "default", "none", "off", "0"):
         return False
-    if not os.getenv("REPORT_ARTICLE_API_KEY"):
-        action_notice(f"report_stage stage=article_model_unavailable provider={provider} missing=REPORT_ARTICLE_API_KEY fallback=deepseek")
+    api_key_env = _article_api_key_env(provider)
+    if not os.getenv(api_key_env):
+        action_notice(f"report_stage stage=article_model_unavailable provider={provider} missing={api_key_env} fallback=deepseek")
         return False
     return True
+
+
+def _article_api_key_env(provider: str) -> str:
+    if provider.startswith("deepseek"):
+        return "DEEPSEEK_API_KEY"
+    return "REPORT_ARTICLE_API_KEY"
+
+
+def _article_base_url_env(provider: str) -> str:
+    if provider.startswith("deepseek"):
+        return "DEEPSEEK_BASE_URL"
+    return "REPORT_ARTICLE_BASE_URL"
+
+
+def _article_default_base_url(provider: str) -> str:
+    if provider.startswith("deepseek"):
+        return "https://api.deepseek.com"
+    return "https://rkapi.com/v1"
+
+
+def _article_reasoning_env(provider: str) -> str | None:
+    if provider.startswith("deepseek"):
+        return None
+    return "REPORT_ARTICLE_REASONING_EFFORT"
+
+
+def _is_transient_model_error(exc: Exception) -> bool:
+    text = str(exc)
+    return any(token in text for token in (" 408:", " 429:", " 500:", " 502:", " 503:", " 504:", "Gateway time-out", "timeout"))
+
+
+def _article_chat_json_provider(messages: list[dict[str, str]], *, provider: str, timeout: int | None = None) -> dict[str, Any]:
+    model_name = _article_model_name(provider)
+    reasoning = os.getenv("REPORT_ARTICLE_REASONING_EFFORT", "").strip()
+    reasoning_hint = f" reasoning={reasoning}" if reasoning and _article_reasoning_env(provider) else ""
+    action_notice(f"report_stage stage=article_model_call provider={provider} model={model_name}{reasoning_hint}")
+    return chat_json(
+        messages,
+        model=model_name,
+        timeout=timeout or article_model_timeout(240),
+        api_key_env=_article_api_key_env(provider),
+        base_url_env=_article_base_url_env(provider),
+        model_env="REPORT_ARTICLE_MODEL",
+        default_base_url=_article_default_base_url(provider),
+        default_model=model_name,
+        provider_label=f"Article LLM ({provider})",
+        reasoning_effort_env=_article_reasoning_env(provider),
+        max_tokens_env="REPORT_ARTICLE_MAX_TOKENS",
+        max_completion_tokens_env="REPORT_ARTICLE_MAX_COMPLETION_TOKENS",
+    )
 
 
 def article_chat_json(messages: list[dict[str, str]], *, timeout: int | None = None) -> dict[str, Any]:
@@ -78,24 +133,26 @@ def article_chat_json(messages: list[dict[str, str]], *, timeout: int | None = N
     if not _use_article_model():
         return chat_json(messages, timeout=timeout or model_timeout(180))
     provider = _article_provider()
-    model_name = _article_model_name()
-    reasoning = os.getenv("REPORT_ARTICLE_REASONING_EFFORT", "").strip()
-    reasoning_hint = f" reasoning={reasoning}" if reasoning else ""
-    action_notice(f"report_stage stage=article_model_call provider={provider} model={model_name}{reasoning_hint}")
-    return chat_json(
-        messages,
-        model=model_name,
-        timeout=timeout or article_model_timeout(240),
-        api_key_env="REPORT_ARTICLE_API_KEY",
-        base_url_env="REPORT_ARTICLE_BASE_URL",
-        model_env="REPORT_ARTICLE_MODEL",
-        default_base_url="https://rkapi.com/v1",
-        default_model="gpt-5.5",
-        provider_label=f"Article LLM ({provider})",
-        reasoning_effort_env="REPORT_ARTICLE_REASONING_EFFORT",
-        max_tokens_env="REPORT_ARTICLE_MAX_TOKENS",
-        max_completion_tokens_env="REPORT_ARTICLE_MAX_COMPLETION_TOKENS",
-    )
+    retries = max(0, int(os.getenv("REPORT_ARTICLE_MODEL_RETRIES", "1")))
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return _article_chat_json_provider(messages, provider=provider, timeout=timeout)
+        except DeepSeekError as exc:
+            last_exc = exc
+            if attempt >= retries or not _is_transient_model_error(exc):
+                break
+            delay = min(15 * (attempt + 1), 45)
+            action_notice(f"report_stage stage=article_model_retry provider={provider} attempt={attempt + 1} delay_s={delay} error={str(exc)[:220]}")
+            time.sleep(delay)
+
+    fallback_provider = (os.getenv("REPORT_ARTICLE_FALLBACK_PROVIDER") or "deepseek-pro").strip().lower()
+    if fallback_provider and fallback_provider not in {"none", "off", "0", provider} and os.getenv(_article_api_key_env(fallback_provider)):
+        action_notice(f"report_stage stage=article_model_fallback from={provider} to={fallback_provider} reason={str(last_exc)[:220]}")
+        return _article_chat_json_provider(messages, provider=fallback_provider, timeout=timeout)
+    if last_exc:
+        raise last_exc
+    return chat_json(messages, timeout=timeout or model_timeout(180))
 
 
 def external_evidence_count(research_rows: list[dict[str, str]]) -> int:

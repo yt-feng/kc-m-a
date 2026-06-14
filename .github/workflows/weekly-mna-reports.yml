@@ -84,6 +84,9 @@ jobs:
       REPORT_ARTICLE_MODEL: ${{ vars.REPORT_ARTICLE_MODEL || 'gpt-5.5' }}
       REPORT_ARTICLE_REASONING_EFFORT: ${{ vars.REPORT_ARTICLE_REASONING_EFFORT || 'xhigh' }}
       REPORT_ARTICLE_MAX_TOKENS: ${{ vars.REPORT_ARTICLE_MAX_TOKENS || '9000' }}
+      REPORT_ARTICLE_MODEL_RETRIES: ${{ vars.REPORT_ARTICLE_MODEL_RETRIES || '1' }}
+      REPORT_ARTICLE_FALLBACK_PROVIDER: ${{ vars.REPORT_ARTICLE_FALLBACK_PROVIDER || 'deepseek-pro' }}
+      REPORT_ARTICLE_DEEPSEEK_MODEL: ${{ vars.REPORT_ARTICLE_DEEPSEEK_MODEL || 'deepseek-v4-pro' }}
       REPORT_MODE: ${{ github.event.inputs.mode || 'weekly' }}
       REPORT_COUNT: ${{ github.event.inputs.count || '4' }}
       REPORT_MIN_DOMESTIC: ${{ github.event.inputs.min_domestic || '2' }}
