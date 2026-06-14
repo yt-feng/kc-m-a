@@ -432,3 +432,7 @@ commit：`62040c55439e07c74eceb75f3499233ec3b1c2e9`
 - 本地验证：`python3 -m compileall mna_case_reports mna_weekly_tracker`通过；文本规范回归确认中文与数字/英文空格、百分号空格、简称标注后空格已清理；候选dry run确认无URL候选排在可写候选之后。
 - 单篇测试run `27483463991`基于`3b7f7fc`运行约1小时仍停留在`Generate M&A case reports`步骤，判断为候选/修订预算过宽，不适合作为快速回归测试。已取消该run，避免旧代码继续占用Action并在后续成功时提交过慢链路生成的报告。
 - 后续增加生成预算控制：默认最多尝试`max(count+3,count*3)`个候选，因此`count=1`最多尝试4个候选、定时默认`count=4`最多尝试12个候选；长度重写次数改为可配置，默认最多2次，最终质量修订默认1次。这样仍保留换候选和重写能力，但避免单篇测试跑满9个候选、每个候选多轮模型调用。
+- 单篇测试run `27484780066`基于`f50e329`仍在`Generate M&A case reports`步骤耗满约3小时后被取消，说明仅限制候选数量还不够；真正需要的是候选级硬超时和阶段级可观测日志。
+- 已继续修复：每个候选默认15分钟硬超时，超时后记录失败并切换下一个候选；Action日志会输出`candidate_start/candidate_failed/candidate_success`以及`collect_research/fact_pack/narrative_plan/article_draft/revision/length_rewrite/final_repair`等阶段notice，避免再次黑箱等待。
+- 失败后扩展研究默认关闭：原逻辑在候选失败后可能重新扩展搜索并再跑一遍完整生成链路，导致单候选耗时翻倍。后续只有显式设置`REPORT_EXPAND_ON_FAILURE=1`才启用。
+- 单篇选题改为`readiness_first`：`count=1`时不再先做类别均衡，而是按是否可写、是否已完成、交易条款线索和原始来源质量排序。已完成且官方PDF披露的嘉美包装要约收购会优先于进行中但尚需审批的厚披露候选，便于先产出一份可检查报告。

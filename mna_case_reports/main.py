@@ -6,7 +6,9 @@ import argparse
 import json
 import logging
 import os
+import signal
 import traceback
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -33,8 +35,40 @@ LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
+class CandidateTimeoutError(TimeoutError):
+    pass
+
+
 def configure_logging(verbose: bool = False) -> None:
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+
+
+def action_notice(message: str) -> None:
+    safe = str(message).replace("\n", " ")[:1000]
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print(f"::notice::{safe}", flush=True)
+    else:
+        print(safe, flush=True)
+
+
+@contextmanager
+def candidate_timeout(seconds: int, case_name: str):
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _handle_timeout(_signum, _frame):
+        raise CandidateTimeoutError(f"Candidate timed out after {seconds}s: {case_name}")
+
+    previous_handler = signal.signal(signal.SIGALRM, _handle_timeout)
+    previous_alarm = signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_alarm:
+            signal.alarm(previous_alarm)
 
 
 def ensure_category_dirs(root: Path) -> None:
@@ -77,6 +111,10 @@ def max_generation_attempts(requested_count: int) -> int:
     return max(requested_count + 3, requested_count * 3)
 
 
+def per_candidate_timeout_seconds() -> int:
+    return int(os.getenv("REPORT_PER_CANDIDATE_TIMEOUT_SECONDS", "900"))
+
+
 def domestic_written(briefs: list[CaseBrief]) -> int:
     return sum(1 for brief in briefs if brief.is_domestic)
 
@@ -98,6 +136,11 @@ def main() -> None:
     ensure_category_dirs(output_root)
     pool_count = candidate_pool_count(args.count)
     max_attempts = max_generation_attempts(args.count)
+    candidate_timeout_seconds = per_candidate_timeout_seconds()
+    action_notice(
+        f"report_run_start mode={args.mode} count={args.count} min_domestic={args.min_domestic} "
+        f"pool_count={pool_count} max_attempts={max_attempts} candidate_timeout_s={candidate_timeout_seconds}"
+    )
 
     if args.mode == "backfill":
         LOGGER.info("Discovering backfill cases")
@@ -138,8 +181,15 @@ def main() -> None:
             briefs.extend(extended_pool_briefs())
             briefs.extend(seed_briefs())
 
-    selected_all = choose_balanced(briefs, count=args.offset + pool_count, min_domestic=args.min_domestic, report_root=output_root)
+    selected_all = choose_balanced(
+        briefs,
+        count=args.offset + pool_count,
+        min_domestic=args.min_domestic,
+        report_root=output_root,
+        readiness_first=args.count <= 1,
+    )
     selected = selected_all[args.offset :]
+    action_notice("selected_candidates=" + " | ".join(f"{idx+1}.{brief.case_name}" for idx, brief in enumerate(selected[:max_attempts])))
     effective_min_domestic = min(args.min_domestic, sum(1 for brief in selected if brief.is_domestic))
     if effective_min_domestic < args.min_domestic:
         LOGGER.info("Lowering domestic quota for this run because selected candidate pool has only %s domestic candidates", effective_min_domestic)
@@ -164,6 +214,7 @@ def main() -> None:
         attempted += 1
         if not is_report_ready_candidate(brief):
             LOGGER.info("Skipping report candidate before research because preflight is weak: %s [%s]", brief.case_name, brief.category)
+            action_notice(f"candidate_skip_preflight attempt={attempted} case={brief.case_name}")
             failures.append({"case_name": brief.case_name, "category": brief.category, "error": "preflight rejected weak report candidate"})
             write_progress(progress_path, {
                 "mode": args.mode,
@@ -177,6 +228,7 @@ def main() -> None:
             })
             continue
         LOGGER.info("Generating report attempt %s from candidate %s/%s: %s [%s]", attempted, index, len(selected), brief.case_name, brief.category)
+        action_notice(f"candidate_start attempt={attempted}/{max_attempts} selected_index={index}/{len(selected)} case={brief.case_name} category={brief.category}")
         write_progress(progress_path, {
             "mode": args.mode,
             "run_label": run_label,
@@ -189,14 +241,17 @@ def main() -> None:
             "failures": failures,
         })
         try:
-            article = generate_article(brief)
+            with candidate_timeout(candidate_timeout_seconds, brief.case_name):
+                article = generate_article(brief)
             path = write_docx(article, category=brief.category, output_root=output_root, run_label=run_label)
             written.append(str(path))
             written_briefs.append(brief)
             save_manifest(manifest_path, written_briefs)
             LOGGER.info("Wrote report: %s", path)
+            action_notice(f"candidate_success case={brief.case_name} path={path}")
         except Exception as exc:  # noqa: BLE001
             LOGGER.error("Report generation failed for %s: %s", brief.case_name, exc)
+            action_notice(f"candidate_failed attempt={attempted} case={brief.case_name} error={str(exc)[:700]}")
             LOGGER.debug("Traceback for %s:\n%s", brief.case_name, traceback.format_exc())
             failures.append({"case_name": brief.case_name, "category": brief.category, "error": str(exc)[:2000]})
             if not args.continue_on_error:

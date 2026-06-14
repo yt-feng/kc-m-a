@@ -203,7 +203,10 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
         brief.financial_highlights,
     ])
     if not has_deal_value_signal(evidence_text):
-        if not (is_authoritative_source_url(brief.source_url) and has_detail_rich_disclosure_signal(brief)):
+        if not (
+            is_authoritative_source_url(brief.source_url)
+            and (has_detail_rich_disclosure_signal(brief) or (brief.is_completed and has_rich_disclosure_signal(brief)))
+        ):
             return False
     return True
 
@@ -241,7 +244,7 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
     if len(clean_cell(brief.seller_motivation)) < 15:
         rationale_penalty += 1
     classic_penalty = 2 if brief.is_classic else 0
-    return (deal_penalty, completed_penalty, disclosure_penalty, url_penalty, rationale_penalty, classic_penalty, brief.case_name)
+    return (completed_penalty, deal_penalty, disclosure_penalty, url_penalty, rationale_penalty, classic_penalty, brief.case_name)
 
 
 def infer_parties_from_name(case_name: str) -> tuple[str, str]:
@@ -748,7 +751,7 @@ def discover_backfill_cases(target_count: int) -> list[CaseBrief]:
     return deduped
 
 
-def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: int = 2, report_root: Path) -> list[CaseBrief]:
+def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: int = 2, report_root: Path, readiness_first: bool = False) -> list[CaseBrief]:
     deduped = dedupe_briefs(briefs)
     historical_keys = historical_case_keys(report_root)
     before_history_filter = len(deduped)
@@ -781,6 +784,31 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
             quality[4],
             quality[6],
         )
+
+    if readiness_first or count <= 1:
+        single_candidates = [b for b in deduped if b.is_domestic or min_domestic <= 0]
+        if not single_candidates:
+            single_candidates = deduped
+        ordered = sorted(single_candidates, key=lambda brief: (0 if is_report_ready_candidate(brief) else 20, report_candidate_priority(brief)))[:count]
+        LOGGER.info(
+            "Selected %s single-report candidates by readiness, including %s domestic cases, requested count=%s min_domestic=%s",
+            len(ordered),
+            sum(1 for x in ordered if x.is_domestic),
+            count,
+            min_domestic,
+        )
+        for order, brief in enumerate(ordered, start=1):
+            LOGGER.info(
+                "Report candidate order %s: ready=%s case=%s category=%s completed=%s value=%s url=%s",
+                order,
+                is_report_ready_candidate(brief),
+                brief.case_name,
+                brief.category,
+                brief.is_completed,
+                brief.deal_value or "-",
+                brief.source_url or "-",
+            )
+        return ordered
 
     # First pass: prefer one case per category, starting from historically underrepresented folders.
     for category in sorted(CATEGORIES, key=lambda c: counts[c] + (2 if c == "SPAC" else 0)):

@@ -29,6 +29,18 @@ from .research import collect_research_context
 LOGGER = logging.getLogger(__name__)
 
 
+def action_notice(message: str) -> None:
+    safe = str(message).replace("\n", " ")[:1000]
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print(f"::notice::{safe}", flush=True)
+    else:
+        LOGGER.info(safe)
+
+
+def model_timeout(default: int = 180) -> int:
+    return int(os.getenv("REPORT_MODEL_TIMEOUT_SECONDS", str(default)))
+
+
 def external_evidence_count(research_rows: list[dict[str, str]]) -> int:
     return sum(1 for row in research_rows if (row.get("evidence_type") or "") != "structured_seed")
 
@@ -127,7 +139,8 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
             return article
         if length < MIN_CHARS:
             LOGGER.info("Regenerating report %s for hard length check, attempt %s, current=%s", brief.case_name, attempt + 1, length)
-            payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True), timeout=240)
+            action_notice(f"report_stage case={brief.case_name} stage=length_rewrite attempt={attempt + 1} current_length={length}")
+            payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True), timeout=model_timeout(180))
             candidate = normalize_article(payload, brief)
             candidate_score = _length_score(candidate)
             if candidate_score > best_score:
@@ -164,6 +177,7 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
         if not hard_issues and not quality_issues:
             return article
         LOGGER.info("Final report repair %s for %s due to hard=%s quality=%s", attempt + 1, brief.case_name, hard_issues, quality_issues)
+        action_notice(f"report_stage case={brief.case_name} stage=final_repair attempt={attempt + 1} hard={len(hard_issues)} quality={len(quality_issues)}")
         current_score = _article_validation_score(article, brief)
         payload = chat_json(
             build_prompt(
@@ -175,7 +189,7 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
                 previous_article=article,
                 quality_rewrite=bool(quality_issues),
             ),
-            timeout=240,
+            timeout=model_timeout(180),
         )
         candidate = normalize_article(payload, brief)
         candidate = expand_to_target_length(candidate, brief, research_rows, fact_pack, narrative_plan)
@@ -190,18 +204,21 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
 
 
 def generate_article(brief: CaseBrief) -> dict[str, object]:
+    action_notice(f"report_stage case={brief.case_name} stage=collect_research_start")
     research_items = collect_research_context(brief)
     research_rows = [item.to_dict() for item in research_items]
     external_count = external_evidence_count(research_rows)
     LOGGER.info("Collected %s research items for report: %s external=%s", len(research_rows), brief.case_name, external_count)
+    action_notice(f"report_stage case={brief.case_name} stage=collect_research_done items={len(research_rows)} external={external_count}")
     if external_count < int(os.getenv("REPORT_MIN_EXTERNAL_RESEARCH_ITEMS", "1")):
         raise RuntimeError(f"Insufficient external research evidence for {brief.case_name}; only structured seed was found.")
     try:
         return generate_article_with_rows(brief, research_rows)
     except Exception as exc:  # noqa: BLE001
-        if external_count < 2 and os.getenv("REPORT_EXPAND_WEAK_RESEARCH", "0") != "1":
+        if os.getenv("REPORT_EXPAND_ON_FAILURE", "0") != "1":
             raise
         LOGGER.warning("Initial report generation failed for %s; expanding Google/Bing/page research and regenerating: %s", brief.case_name, exc)
+        action_notice(f"report_stage case={brief.case_name} stage=expanded_research_start reason={str(exc)[:300]}")
         expanded_items = collect_research_context(brief, limit=56, expanded=True)
         expanded_rows = [item.to_dict() for item in expanded_items]
         expanded_external_count = external_evidence_count(expanded_rows)
@@ -211,20 +228,28 @@ def generate_article(brief: CaseBrief) -> dict[str, object]:
             brief.case_name,
             expanded_external_count,
         )
+        action_notice(f"report_stage case={brief.case_name} stage=expanded_research_done items={len(expanded_rows)} external={expanded_external_count}")
         if len(expanded_rows) <= len(research_rows) or expanded_external_count < 2:
             raise
         return generate_article_with_rows(brief, expanded_rows)
 
 
 def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, str]]) -> dict[str, object]:
+    action_notice(f"report_stage case={brief.case_name} stage=fact_pack_start")
     fact_pack = build_fact_pack(brief, research_rows)
     if fact_pack.validation_issues:
+        action_notice(f"report_stage case={brief.case_name} stage=fact_pack_failed issues={fact_pack.validation_issues}")
         raise RuntimeError(f"Fact pack validation failed for {brief.case_name}: {fact_pack.validation_issues}")
+    action_notice(f"report_stage case={brief.case_name} stage=fact_pack_done deal_value={fact_pack.deal_value[:120]}")
+    action_notice(f"report_stage case={brief.case_name} stage=narrative_plan_start")
     narrative_plan = build_narrative_plan(brief, fact_pack, research_rows)
     LOGGER.info("Generated narrative plan for %s: %s", brief.case_name, narrative_plan.to_dict())
+    action_notice(f"report_stage case={brief.case_name} stage=narrative_plan_done")
 
-    payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan), timeout=240)
+    action_notice(f"report_stage case={brief.case_name} stage=article_draft_start")
+    payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan), timeout=model_timeout(180))
     article = normalize_article(payload, brief)
+    action_notice(f"report_stage case={brief.case_name} stage=article_draft_done length={chinese_length(article_text(article))}")
     issues = validate_article(article, brief)
     quality_issues = assess_quality(article)
     max_revisions = int(os.getenv("REPORT_MAX_REVISIONS", "3"))
@@ -237,6 +262,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
             break
         is_quality_rewrite = bool(quality_issues) and not issues
         LOGGER.info("Revising report %s round %s due to issues: %s", brief.case_name, round_idx + 1, non_length_issues or combined_issues)
+        action_notice(f"report_stage case={brief.case_name} stage=revision_start round={round_idx + 1} hard={len(issues)} quality={len(quality_issues)}")
         payload = chat_json(
             build_prompt(
                 brief,
@@ -247,12 +273,14 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
                 previous_article=article,
                 quality_rewrite=is_quality_rewrite,
             ),
-            timeout=240,
+            timeout=model_timeout(180),
         )
         article = normalize_article(payload, brief)
+        action_notice(f"report_stage case={brief.case_name} stage=revision_done round={round_idx + 1} length={chinese_length(article_text(article))}")
         issues = validate_article(article, brief)
         quality_issues = assess_quality(article)
 
+    action_notice(f"report_stage case={brief.case_name} stage=final_repair_pipeline_start length={chinese_length(article_text(article))}")
     article = final_repair_article(article, brief, research_rows, fact_pack, narrative_plan)
     final_issues = validate_article(article, brief)
     final_quality_issues = assess_quality(article)
