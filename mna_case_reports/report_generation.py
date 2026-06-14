@@ -37,13 +37,14 @@ def set_progress_queue(queue: Any | None) -> None:
 
 def action_notice(message: str) -> None:
     safe = str(message).replace("\n", " ")[:1000]
+    if PROGRESS_QUEUE is not None:
+        print(f"WORKER_EVENT {safe}", flush=True)
+        PROGRESS_QUEUE.put({"type": "event", "message": safe})
+        return
     if os.getenv("GITHUB_ACTIONS") == "true":
         print(f"::notice::{safe}", flush=True)
     else:
         LOGGER.info(safe)
-    if PROGRESS_QUEUE is not None:
-        PROGRESS_QUEUE.put({"type": "event", "message": safe})
-        return
 
 
 def model_timeout(default: int = 180) -> int:
