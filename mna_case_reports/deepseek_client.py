@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -85,39 +86,114 @@ def extract_json(text: str) -> dict[str, Any]:
             raise json.JSONDecodeError(f"{exc.msg}. Nearby text: {snippet}", exc.doc, exc.pos) from raw_exc
 
 
-def _api_config(model: str | None = None) -> tuple[str, str, str]:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
+def _api_config(
+    model: str | None = None,
+    *,
+    api_key_env: str = "DEEPSEEK_API_KEY",
+    base_url_env: str = "DEEPSEEK_BASE_URL",
+    model_env: str = "DEEPSEEK_MODEL",
+    default_base_url: str = DEFAULT_BASE_URL,
+    default_model: str = DEFAULT_MODEL,
+    provider_label: str = "DeepSeek",
+) -> tuple[str, str, str]:
+    api_key = os.getenv(api_key_env)
     if not api_key:
-        raise DeepSeekError("DEEPSEEK_API_KEY is not set")
-    base_url = os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    model_name = model or os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL)
+        raise DeepSeekError(f"{provider_label} API key env {api_key_env} is not set")
+    base_url = os.getenv(base_url_env, default_base_url).rstrip("/")
+    model_name = model or os.getenv(model_env, default_model)
     return api_key, base_url, model_name
 
 
-def _post_chat(messages: list[dict[str, str]], *, model: str | None = None, timeout: int = 180, temperature: float = 0.2) -> str:
-    api_key, base_url, model_name = _api_config(model)
-    response = requests.post(
+def _post_chat_once(api_key: str, base_url: str, payload: dict[str, Any], *, timeout: int) -> requests.Response:
+    return requests.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": False,
-            "response_format": {"type": "json_object"},
-        },
+        json=payload,
         timeout=timeout,
     )
+
+
+def _post_chat(
+    messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
+    timeout: int = 180,
+    temperature: float = 0.2,
+    api_key_env: str = "DEEPSEEK_API_KEY",
+    base_url_env: str = "DEEPSEEK_BASE_URL",
+    model_env: str = "DEEPSEEK_MODEL",
+    default_base_url: str = DEFAULT_BASE_URL,
+    default_model: str = DEFAULT_MODEL,
+    provider_label: str = "DeepSeek",
+    reasoning_effort_env: str | None = None,
+    max_tokens_env: str | None = None,
+    max_completion_tokens_env: str | None = None,
+) -> str:
+    api_key, base_url, model_name = _api_config(
+        model,
+        api_key_env=api_key_env,
+        base_url_env=base_url_env,
+        model_env=model_env,
+        default_base_url=default_base_url,
+        default_model=default_model,
+        provider_label=provider_label,
+    )
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+        "response_format": {"type": "json_object"},
+    }
+    reasoning_effort = os.getenv(reasoning_effort_env or "")
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+    max_tokens = os.getenv(max_tokens_env or "")
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    max_completion_tokens = os.getenv(max_completion_tokens_env or "")
+    if max_completion_tokens:
+        payload["max_completion_tokens"] = int(max_completion_tokens)
+
+    retry_payload = payload
+    response = _post_chat_once(api_key, base_url, retry_payload, timeout=timeout)
+    optional_fields = ("response_format", "reasoning_effort", "temperature", "max_tokens", "max_completion_tokens")
+    for _ in range(4):
+        rejected = [field for field in optional_fields if response.status_code >= 400 and field in response.text and field in retry_payload]
+        if not rejected:
+            break
+        next_payload = copy.deepcopy(retry_payload)
+        for field in rejected:
+            next_payload.pop(field, None)
+        if next_payload == retry_payload:
+            break
+        LOGGER.warning("%s rejected optional chat parameter(s) %s; retrying with compatible payload", provider_label, ",".join(rejected))
+        retry_payload = next_payload
+        response = _post_chat_once(api_key, base_url, retry_payload, timeout=timeout)
     if response.status_code >= 400:
-        raise DeepSeekError(f"DeepSeek API error {response.status_code}: {response.text[:1000]}")
+        raise DeepSeekError(f"{provider_label} API error {response.status_code}: {response.text[:1000]}")
     data = response.json()
     try:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise DeepSeekError(f"Unexpected DeepSeek response shape: {data}") from exc
+        raise DeepSeekError(f"Unexpected {provider_label} response shape: {data}") from exc
 
 
-def repair_json_text(text: str, *, model: str | None = None, timeout: int = 120) -> dict[str, Any]:
+def repair_json_text(
+    text: str,
+    *,
+    model: str | None = None,
+    timeout: int = 120,
+    api_key_env: str = "DEEPSEEK_API_KEY",
+    base_url_env: str = "DEEPSEEK_BASE_URL",
+    model_env: str = "DEEPSEEK_MODEL",
+    default_base_url: str = DEFAULT_BASE_URL,
+    default_model: str = DEFAULT_MODEL,
+    provider_label: str = "DeepSeek",
+    reasoning_effort_env: str | None = None,
+    max_tokens_env: str | None = None,
+    max_completion_tokens_env: str | None = None,
+) -> dict[str, Any]:
     candidate = _extract_json_span(text)
     if len(candidate) > 60000:
         candidate = candidate[:60000]
@@ -128,12 +204,55 @@ def repair_json_text(text: str, *, model: str | None = None, timeout: int = 120)
             "content": "下面内容接近JSON但语法可能有缺失逗号、错误引号或尾逗号。请修复为合法JSON对象：\n" + candidate,
         },
     ]
-    repaired = _post_chat(messages, model=model, timeout=timeout, temperature=0.0)
+    repaired = _post_chat(
+        messages,
+        model=model,
+        timeout=timeout,
+        temperature=0.0,
+        api_key_env=api_key_env,
+        base_url_env=base_url_env,
+        model_env=model_env,
+        default_base_url=default_base_url,
+        default_model=default_model,
+        provider_label=provider_label,
+        reasoning_effort_env=reasoning_effort_env,
+        max_tokens_env=max_tokens_env,
+        max_completion_tokens_env=max_completion_tokens_env,
+    )
     return extract_json(repaired)
 
 
-def chat_json(messages: list[dict[str, str]], *, model: str | None = None, timeout: int = 180, repair: bool = True) -> dict[str, Any]:
-    content = _post_chat(messages, model=model, timeout=timeout, temperature=0.2)
+def chat_json(
+    messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
+    timeout: int = 180,
+    repair: bool = True,
+    api_key_env: str = "DEEPSEEK_API_KEY",
+    base_url_env: str = "DEEPSEEK_BASE_URL",
+    model_env: str = "DEEPSEEK_MODEL",
+    default_base_url: str = DEFAULT_BASE_URL,
+    default_model: str = DEFAULT_MODEL,
+    provider_label: str = "DeepSeek",
+    reasoning_effort_env: str | None = None,
+    max_tokens_env: str | None = None,
+    max_completion_tokens_env: str | None = None,
+) -> dict[str, Any]:
+    content = _post_chat(
+        messages,
+        model=model,
+        timeout=timeout,
+        temperature=0.2,
+        api_key_env=api_key_env,
+        base_url_env=base_url_env,
+        model_env=model_env,
+        default_base_url=default_base_url,
+        default_model=default_model,
+        provider_label=provider_label,
+        reasoning_effort_env=reasoning_effort_env,
+        max_tokens_env=max_tokens_env,
+        max_completion_tokens_env=max_completion_tokens_env,
+    )
     try:
         return extract_json(content)
     except Exception as first_exc:  # noqa: BLE001
@@ -145,7 +264,20 @@ def chat_json(messages: list[dict[str, str]], *, model: str | None = None, timeo
             except Exception as local_exc:  # noqa: BLE001
                 try:
                     LOGGER.warning("DeepSeek malformed JSON local repair failed; attempting model repair: %s", local_exc)
-                    return repair_json_text(content, model=model, timeout=min(timeout, 120))
+                    return repair_json_text(
+                        content,
+                        model=model,
+                        timeout=min(timeout, 120),
+                        api_key_env=api_key_env,
+                        base_url_env=base_url_env,
+                        model_env=model_env,
+                        default_base_url=default_base_url,
+                        default_model=default_model,
+                        provider_label=provider_label,
+                        reasoning_effort_env=reasoning_effort_env,
+                        max_tokens_env=max_tokens_env,
+                        max_completion_tokens_env=max_completion_tokens_env,
+                    )
                 except Exception as repair_exc:  # noqa: BLE001
                     snippet = content[:2000].replace("\n", " ")
                     raise DeepSeekError(f"DeepSeek JSON repair failed: {repair_exc}; original prefix={snippet}") from repair_exc

@@ -39,11 +39,23 @@ on:
         required: false
         default: "300"
       model_timeout:
-        description: "Per-model-call timeout seconds."
+        description: "Per-light-model-call timeout seconds."
         required: false
         default: "90"
+      article_model_timeout:
+        description: "Per article-model call timeout seconds for long-form drafting and repair."
+        required: false
+        default: "300"
+      article_model_provider:
+        description: "Article model provider for complex long-form writing: rkapi, deepseek, or off."
+        required: false
+        default: "rkapi"
       allow_draft_on_validation_failure:
         description: "Write a DOCX draft even if article quality validation fails. Manual smoke-test only."
+        required: false
+        default: "0"
+      fast_draft_mode:
+        description: "Use a shorter single-pass article prompt for manual smoke-test DOCX generation."
         required: false
         default: "0"
       docx_validate_warn_only:
@@ -66,6 +78,12 @@ jobs:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_MODEL: deepseek-v4-flash
+      REPORT_ARTICLE_API_KEY: ${{ secrets.RKAPI_API_KEY }}
+      REPORT_ARTICLE_MODEL_PROVIDER: ${{ github.event.inputs.article_model_provider || vars.REPORT_ARTICLE_MODEL_PROVIDER || 'rkapi' }}
+      REPORT_ARTICLE_BASE_URL: ${{ vars.REPORT_ARTICLE_BASE_URL || 'https://rkapi.com/v1' }}
+      REPORT_ARTICLE_MODEL: ${{ vars.REPORT_ARTICLE_MODEL || 'gpt-5.5' }}
+      REPORT_ARTICLE_REASONING_EFFORT: ${{ vars.REPORT_ARTICLE_REASONING_EFFORT || 'xhigh' }}
+      REPORT_ARTICLE_MAX_TOKENS: ${{ vars.REPORT_ARTICLE_MAX_TOKENS || '9000' }}
       REPORT_MODE: ${{ github.event.inputs.mode || 'weekly' }}
       REPORT_COUNT: ${{ github.event.inputs.count || '4' }}
       REPORT_MIN_DOMESTIC: ${{ github.event.inputs.min_domestic || '2' }}
@@ -82,7 +100,9 @@ jobs:
       REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: ${{ github.event.inputs.candidate_timeout || '300' }}
       REPORT_WORKER_HEARTBEAT_SECONDS: "30"
       REPORT_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.model_timeout || '90' }}
+      REPORT_ARTICLE_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.article_model_timeout || '300' }}
       REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE: ${{ github.event.inputs.allow_draft_on_validation_failure || '0' }}
+      REPORT_FAST_DRAFT_MODE: ${{ github.event.inputs.fast_draft_mode || '0' }}
       REPORT_DOCX_VALIDATE_WARN_ONLY: ${{ github.event.inputs.docx_validate_warn_only || '0' }}
       REPORT_EXPAND_ON_FAILURE: "0"
       REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: "1"

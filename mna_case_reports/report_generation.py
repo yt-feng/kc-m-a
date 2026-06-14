@@ -51,6 +51,53 @@ def model_timeout(default: int = 180) -> int:
     return int(os.getenv("REPORT_MODEL_TIMEOUT_SECONDS", str(default)))
 
 
+def article_model_timeout(default: int = 240) -> int:
+    return int(os.getenv("REPORT_ARTICLE_MODEL_TIMEOUT_SECONDS") or os.getenv("REPORT_MODEL_TIMEOUT_SECONDS", str(default)))
+
+
+def _article_provider() -> str:
+    return (os.getenv("REPORT_ARTICLE_MODEL_PROVIDER") or "").strip().lower()
+
+
+def _article_model_name() -> str:
+    return (os.getenv("REPORT_ARTICLE_MODEL") or "gpt-5.5").strip()
+
+
+def _use_article_model() -> bool:
+    provider = _article_provider()
+    if provider in ("", "deepseek", "default", "none", "off", "0"):
+        return False
+    if not os.getenv("REPORT_ARTICLE_API_KEY"):
+        action_notice(f"report_stage stage=article_model_unavailable provider={provider} missing=REPORT_ARTICLE_API_KEY fallback=deepseek")
+        return False
+    return True
+
+
+def article_chat_json(messages: list[dict[str, str]], *, timeout: int | None = None) -> dict[str, Any]:
+    """Route expensive long-form article calls to the configured strong model."""
+    if not _use_article_model():
+        return chat_json(messages, timeout=timeout or model_timeout(180))
+    provider = _article_provider()
+    model_name = _article_model_name()
+    reasoning = os.getenv("REPORT_ARTICLE_REASONING_EFFORT", "").strip()
+    reasoning_hint = f" reasoning={reasoning}" if reasoning else ""
+    action_notice(f"report_stage stage=article_model_call provider={provider} model={model_name}{reasoning_hint}")
+    return chat_json(
+        messages,
+        model=model_name,
+        timeout=timeout or article_model_timeout(240),
+        api_key_env="REPORT_ARTICLE_API_KEY",
+        base_url_env="REPORT_ARTICLE_BASE_URL",
+        model_env="REPORT_ARTICLE_MODEL",
+        default_base_url="https://rkapi.com/v1",
+        default_model="gpt-5.5",
+        provider_label=f"Article LLM ({provider})",
+        reasoning_effort_env="REPORT_ARTICLE_REASONING_EFFORT",
+        max_tokens_env="REPORT_ARTICLE_MAX_TOKENS",
+        max_completion_tokens_env="REPORT_ARTICLE_MAX_COMPLETION_TOKENS",
+    )
+
+
 def external_evidence_count(research_rows: list[dict[str, str]]) -> int:
     return sum(1 for row in research_rows if (row.get("evidence_type") or "") != "structured_seed")
 
@@ -113,6 +160,40 @@ def build_prompt(
     return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
 
 
+def build_fast_draft_prompt(
+    brief: CaseBrief,
+    research_rows: list[dict[str, str]],
+    *,
+    fact_pack: FactPack,
+    narrative_plan: NarrativePlan,
+) -> list[dict[str, str]]:
+    compact_rows: list[dict[str, str]] = []
+    for row in research_rows[:8]:
+        compact_rows.append({
+            "title": str(row.get("title") or "")[:160],
+            "url": str(row.get("url") or "")[:300],
+            "summary": str(row.get("summary") or "")[:700],
+            "numeric_facts": str(row.get("numeric_facts") or "")[:900],
+            "evidence_type": str(row.get("evidence_type") or "")[:60],
+        })
+    system_prompt = "你是严谨的并购案例研究作者。只输出JSON，不编造事实。"
+    user_prompt = (
+        "请基于事实包快速生成一篇可直接写入Word的中文并购案例分析稿。"
+        "标题采用主标题：副标题，正文3,500至4,000字，4至6个章节。"
+        "不要写模板化套话，不要写“并购不是终点，整合才是开始”。"
+        "每章必须紧扣本案事实，覆盖产业判断、交易结构、交易条款、买方逻辑、卖方或股东接受机制、并购方法论意义。"
+        "中文和英文或数字之间不要加空格；金额、股份数、比例等数字使用千分位逗号；公司首次出现按完整名称标注简称和股票代码（如披露）。"
+        "资料未披露的内容必须写明未披露，不能补编。"
+        f"\n案例：{brief.case_name}"
+        f"\n分类：{brief.category}"
+        f"\n事实包：{json.dumps(fact_pack.to_dict(), ensure_ascii=False)}"
+        f"\n叙事计划：{json.dumps(narrative_plan.to_dict(), ensure_ascii=False)}"
+        f"\n资料线索：{json.dumps(compact_rows, ensure_ascii=False)}"
+        "\n输出JSON格式：{\"case_name\":...,\"category\":...,\"title\":\"主标题：副标题\",\"intro\":...,\"sections\":[{\"heading\":\"一、章节标题\",\"paragraphs\":[\"自然段\",...]},...],\"sources\":[...]}。"
+    )
+    return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+
 def normalize_article(payload: dict[str, object], brief: CaseBrief) -> dict[str, object]:
     sections = payload.get("sections") if isinstance(payload.get("sections"), list) else []
     article: dict[str, Any] = {
@@ -150,7 +231,10 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
         if length < MIN_CHARS:
             LOGGER.info("Regenerating report %s for hard length check, attempt %s, current=%s", brief.case_name, attempt + 1, length)
             action_notice(f"report_stage case={brief.case_name} stage=length_rewrite attempt={attempt + 1} current_length={length}")
-            payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True), timeout=model_timeout(180))
+            payload = article_chat_json(
+                build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True),
+                timeout=article_model_timeout(240),
+            )
             candidate = normalize_article(payload, brief)
             candidate_score = _length_score(candidate)
             if candidate_score > best_score:
@@ -189,7 +273,7 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
         LOGGER.info("Final report repair %s for %s due to hard=%s quality=%s", attempt + 1, brief.case_name, hard_issues, quality_issues)
         action_notice(f"report_stage case={brief.case_name} stage=final_repair attempt={attempt + 1} hard={len(hard_issues)} quality={len(quality_issues)}")
         current_score = _article_validation_score(article, brief)
-        payload = chat_json(
+        payload = article_chat_json(
             build_prompt(
                 brief,
                 research_rows,
@@ -199,7 +283,7 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
                 previous_article=article,
                 quality_rewrite=bool(quality_issues),
             ),
-            timeout=model_timeout(180),
+            timeout=article_model_timeout(240),
         )
         candidate = normalize_article(payload, brief)
         candidate = expand_to_target_length(candidate, brief, research_rows, fact_pack, narrative_plan)
@@ -245,6 +329,11 @@ def generate_article(brief: CaseBrief) -> dict[str, object]:
 
 
 def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, str]]) -> dict[str, object]:
+    action_notice(
+        f"report_stage case={brief.case_name} stage=model_routing "
+        f"light_model={os.getenv('DEEPSEEK_MODEL', 'deepseek-v4-flash')} "
+        f"article_provider={_article_provider() or 'deepseek'} article_model={_article_model_name()}"
+    )
     action_notice(f"report_stage case={brief.case_name} stage=fact_pack_start")
     fact_pack = build_fact_pack(brief, research_rows)
     if fact_pack.validation_issues:
@@ -256,8 +345,29 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
     LOGGER.info("Generated narrative plan for %s: %s", brief.case_name, narrative_plan.to_dict())
     action_notice(f"report_stage case={brief.case_name} stage=narrative_plan_done")
 
+    if os.getenv("REPORT_FAST_DRAFT_MODE", "0") == "1":
+        action_notice(f"report_stage case={brief.case_name} stage=fast_draft_start")
+        payload = article_chat_json(
+            build_fast_draft_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan),
+            timeout=article_model_timeout(240),
+        )
+        article = normalize_article(payload, brief)
+        action_notice(f"report_stage case={brief.case_name} stage=fast_draft_done length={chinese_length(article_text(article))}")
+        final_issues = validate_article(article, brief)
+        final_quality_issues = assess_quality(article)
+        if final_issues or final_quality_issues:
+            LOGGER.warning("Fast draft has validation/quality issues: %s hard=%s quality=%s", brief.case_name, final_issues, final_quality_issues)
+            if os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") != "1":
+                raise RuntimeError(f"Report quality validation failed for {brief.case_name}: hard={final_issues} quality={final_quality_issues}")
+            article["validation_issues"] = final_issues
+            article["quality_issues"] = final_quality_issues
+        return postprocess_article(article, brief)
+
     action_notice(f"report_stage case={brief.case_name} stage=article_draft_start")
-    payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan), timeout=model_timeout(180))
+    payload = article_chat_json(
+        build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan),
+        timeout=article_model_timeout(240),
+    )
     article = normalize_article(payload, brief)
     action_notice(f"report_stage case={brief.case_name} stage=article_draft_done length={chinese_length(article_text(article))}")
     issues = validate_article(article, brief)
@@ -273,7 +383,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         is_quality_rewrite = bool(quality_issues) and not issues
         LOGGER.info("Revising report %s round %s due to issues: %s", brief.case_name, round_idx + 1, non_length_issues or combined_issues)
         action_notice(f"report_stage case={brief.case_name} stage=revision_start round={round_idx + 1} hard={len(issues)} quality={len(quality_issues)}")
-        payload = chat_json(
+        payload = article_chat_json(
             build_prompt(
                 brief,
                 research_rows,
@@ -283,7 +393,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
                 previous_article=article,
                 quality_rewrite=is_quality_rewrite,
             ),
-            timeout=model_timeout(180),
+            timeout=article_model_timeout(240),
         )
         article = normalize_article(payload, brief)
         action_notice(f"report_stage case={brief.case_name} stage=revision_done round={round_idx + 1} length={chinese_length(article_text(article))}")
