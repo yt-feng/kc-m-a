@@ -50,6 +50,16 @@ BUYER_MOTIVE_PATTERNS = ("买方", "收购方", "并购方", "购买", "收购�
 SELLER_MOTIVE_PATTERNS = ("卖方", "出售方", "标的方", "转让方", "被整合方", "退出", "出售股权", "出让", "接受", "承接", "私有化", "预受要约", "接受要约", "现金要约", "协议转让", "减持", "股东账户")
 INTRO_PATTERNS = ("基本介绍", "主营", "主营业务", "业务", "收入", "净利润", "成立", "上市", "资产", "产品", "客户")
 CN_NUMS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
+LOCATION_PREFIXES = (
+    "北京市", "上海市", "天津市", "重庆市", "深圳市", "广州市", "苏州市", "长沙市", "杭州市", "南京市",
+    "成都市", "武汉市", "宁波市", "厦门市", "青岛市", "合肥市", "无锡市", "常州市", "北京市", "上海",
+    "北京", "深圳", "广州", "苏州", "长沙", "杭州", "南京", "成都", "武汉", "宁波", "厦门", "青岛", "合肥",
+    "无锡", "常州",
+)
+GENERIC_ALIAS_PARTS = (
+    "科技发展", "管理咨询", "数码科技", "物流技术", "测试技术", "食品包装", "国际控股", "科技集团",
+    "科技", "技术", "发展", "投资", "控股", "集团",
+)
 
 ASCII_TO_FULLWIDTH = str.maketrans({
     ",": "，",
@@ -100,10 +110,31 @@ def compact_name(value: str) -> str:
 def name_aliases(name: str) -> set[str]:
     compact = compact_name(name)
     aliases = {name, compact}
+    for part in re.split(r"[、,，/和及与]+", compact):
+        part = part.strip()
+        if len(part) >= 3:
+            aliases.add(part)
+    location_stripped = compact
+    for prefix in LOCATION_PREFIXES:
+        if location_stripped.startswith(prefix) and len(location_stripped) - len(prefix) >= 3:
+            location_stripped = location_stripped[len(prefix):]
+            aliases.add(location_stripped)
+            break
+    for base in {compact, location_stripped}:
+        shortened = base
+        for generic in GENERIC_ALIAS_PARTS:
+            shortened = shortened.replace(generic, "")
+        if len(shortened) >= 3:
+            aliases.add(shortened)
+        if "食品包装" in base and len(base.replace("食品", "")) >= 3:
+            aliases.add(base.replace("食品", ""))
     if len(compact) >= 4:
         aliases.add(compact[:4])
         aliases.add(compact[-4:])
         aliases.add(compact[:2] + compact[-2:])
+    if len(location_stripped) >= 4:
+        aliases.add(location_stripped[:4])
+        aliases.add(location_stripped[-4:])
     if len(compact) >= 5:
         aliases.add(compact[:5])
         aliases.add(compact[-5:])
@@ -150,6 +181,16 @@ def strip_heading_number(heading: str) -> str:
 def remove_cjk_alnum_spaces(text: str) -> str:
     text = re.sub(rf"([{CJK}])\s+([A-Za-z0-9])", r"\1\2", text)
     text = re.sub(rf"([A-Za-z0-9])\s+([{CJK}])", r"\1\2", text)
+    text = re.sub(rf"([{CJK}])\s+([{CJK}])", r"\1\2", text)
+    return text
+
+
+def remove_spaces_around_cjk_punctuation(text: str) -> str:
+    text = re.sub(r"\s+([，。；：？！、）】》])", r"\1", text)
+    text = re.sub(r"([（【《])\s+", r"\1", text)
+    text = re.sub(rf"([）】》])\s+([{CJK}A-Za-z0-9])", r"\1\2", text)
+    text = re.sub(rf"([{CJK}A-Za-z0-9])\s+([（【《])", r"\1\2", text)
+    text = re.sub(r"(\d(?:,\d{3})*(?:\.\d+)?)\s+([%％])", r"\1\2", text)
     return text
 
 
@@ -191,7 +232,11 @@ def format_thousands(text: str) -> str:
 
 def normalize_text(text: str) -> str:
     text = re.sub(r"[\s\u3000]+", " ", str(text or "")).strip()
-    text = remove_cjk_alnum_spaces(text)
+    previous = None
+    while previous != text:
+        previous = text
+        text = remove_cjk_alnum_spaces(text)
+        text = remove_spaces_around_cjk_punctuation(text)
     text = normalize_fullwidth_punctuation(text)
     text = format_thousands(text)
     return text
@@ -244,9 +289,14 @@ def sanitize_fact_language(article: dict[str, object]) -> None:
         "本文分析": "本案例复盘",
         "本文": "本案例",
         "本报告": "本案例",
+        "假设": "情形",
+        "推测": "判断",
+        "猜测": "判断",
         "有望": "相关安排指向",
         "或许": "公开资料未进一步披露",
         "大概": "约",
+        "预计将": "计划",
+        "不排除": "存在",
         "可能是": "公开资料显示为",
         "可能会": "相关安排指向",
         "如果": "在公开资料所示条件下",
@@ -282,6 +332,8 @@ def sanitize_fact_language(article: dict[str, object]) -> None:
     def clean(value: str) -> str:
         value = _replace_all(value, audience_replacements)
         value = _replace_all(value, replacements)
+        value = re.sub(r"\b(?:could|might|possibly)\b", "", value, flags=re.I)
+        value = re.sub(r"\bmay\b", "", value, flags=re.I)
         return normalize_text(value)
 
     article["intro"] = clean(str(article.get("intro") or ""))

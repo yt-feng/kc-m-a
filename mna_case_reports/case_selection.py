@@ -202,14 +202,20 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
         brief.source_title,
         brief.financial_highlights,
     ])
-    if not has_deal_value_signal(evidence_text) and not is_authoritative_source_url(brief.source_url):
-        return False
+    if not has_deal_value_signal(evidence_text):
+        if not (is_authoritative_source_url(brief.source_url) and has_detail_rich_disclosure_signal(brief)):
+            return False
     return True
 
 
 def has_rich_disclosure_signal(brief: CaseBrief) -> bool:
     text = "\n".join([brief.source_title, brief.why, brief.deal_status, brief.source_url])
     return any(token in text for token in RICH_DISCLOSURE_HINTS)
+
+
+def has_detail_rich_disclosure_signal(brief: CaseBrief) -> bool:
+    text = "\n".join([brief.source_title, brief.why, brief.deal_status, brief.source_url])
+    return any(token in text for token in DETAIL_RICH_DISCLOSURE_HINTS)
 
 
 def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int, int, str]:
@@ -225,7 +231,7 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
     deal_signal = has_deal_value_signal("\n".join([brief.deal_value, brief.financial_highlights, brief.why, brief.source_title]))
     if deal_signal:
         deal_penalty = 0
-    elif is_authoritative_source_url(brief.source_url) and has_rich_disclosure_signal(brief):
+    elif is_authoritative_source_url(brief.source_url) and has_detail_rich_disclosure_signal(brief):
         deal_penalty = 1
     else:
         deal_penalty = 2 if is_authoritative_source_url(brief.source_url) else 5
@@ -235,7 +241,7 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
     if len(clean_cell(brief.seller_motivation)) < 15:
         rationale_penalty += 1
     classic_penalty = 2 if brief.is_classic else 0
-    return (disclosure_penalty, completed_penalty, url_penalty, deal_penalty, rationale_penalty, classic_penalty, brief.case_name)
+    return (deal_penalty, completed_penalty, disclosure_penalty, url_penalty, rationale_penalty, classic_penalty, brief.case_name)
 
 
 def infer_parties_from_name(case_name: str) -> tuple[str, str]:
@@ -832,7 +838,7 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
         count,
         min_domestic,
     )
-    ordered = sorted(selected[:count], key=report_candidate_priority)
+    ordered = sorted(selected[:count], key=lambda brief: (0 if is_report_ready_candidate(brief) else 20, report_candidate_priority(brief)))
     for order, brief in enumerate(ordered, start=1):
         LOGGER.info(
             "Report candidate order %s: ready=%s case=%s category=%s completed=%s value=%s url=%s",

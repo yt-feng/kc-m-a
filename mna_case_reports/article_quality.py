@@ -159,25 +159,38 @@ def assess_quality(article: dict[str, object]) -> list[str]:
         issues.append("段落开头重复，行文模式化；需要调整段落推进方式，避免每段都用相同句式开头。")
 
     para_counts = [len(sec.get("paragraphs") or []) for sec in _sections(article)]
-    if len(para_counts) >= 4 and len(set(para_counts[:-1])) <= 1:
+    if len(para_counts) >= 4 and len(set(para_counts[:-1])) <= 1 and (template_heading_count >= 1 or bool(repeated_openings)):
         issues.append("各章节段落数量过于整齐，结构像模板；应根据材料重点调整章节长短。")
 
     depth_categories = 0
-    if _count_terms(text, INDUSTRY_TERMS) >= 4:
+    industry_count = _count_terms(text, INDUSTRY_TERMS)
+    structure_count = _count_terms(text, STRUCTURE_TERMS)
+    methodology_count = _count_terms(text, METHODOLOGY_TERMS)
+    financial_count = _count_terms(text, FINANCIAL_TERMS)
+    if industry_count >= 4:
         depth_categories += 1
-    if _count_terms(text, STRUCTURE_TERMS) >= 5:
+    if structure_count >= 5:
         depth_categories += 1
-    if _count_terms(text, METHODOLOGY_TERMS) >= 4:
+    if methodology_count >= 4:
         depth_categories += 1
-    if _count_terms(text, FINANCIAL_TERMS) >= 5:
+    if financial_count >= 5:
         depth_categories += 1
     if depth_categories < 3:
         issues.append("分析深度不足：需要同时展开至少三个层面，例如产业判断、交易结构、财务影响、交割承接或并购方法论意义。")
-    if _count_terms(text, INDUSTRY_TERMS) < 5 or _count_terms(text, STRUCTURE_TERMS) < 6 or _count_terms(text, METHODOLOGY_TERMS) < 4:
+    weak_core_layers = 0
+    if industry_count < 3:
+        weak_core_layers += 1
+    if structure_count < 4:
+        weak_core_layers += 1
+    if methodology_count < 3:
+        weak_core_layers += 1
+    if weak_core_layers >= 2:
         issues.append("产业判断、交易结构分析和并购方法论意义没有写足，需要围绕本案事实展开，而不是只描述交易过程。")
 
+    paragraph_lengths = [len(re.sub(r"\s+", "", p)) for p in paragraphs]
     long_paragraphs = [p for p in paragraphs if len(re.sub(r"\s+", "", p)) >= 260]
-    if len(long_paragraphs) < 4:
+    average_para_len = sum(paragraph_lengths) / len(paragraph_lengths) if paragraph_lengths else 0
+    if len(long_paragraphs) < 2 and average_para_len < 210:
         issues.append("长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。")
 
     if not any(term in text for term in ("方法论", "同类并购", "执行条件", "核验", "治理边界", "交割承接", "整合节奏", "条款安排")):

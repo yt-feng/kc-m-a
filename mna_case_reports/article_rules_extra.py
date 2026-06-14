@@ -172,10 +172,41 @@ def _walk_text_fields(article: dict[str, object]) -> None:
                 sec["paragraphs"] = [repair_party_annotation_text_once(str(p), seen_notes) for p in paragraphs]
 
 
+def _normalize_text_fields(article: dict[str, object]) -> None:
+    article["title"] = base.normalize_text(str(article.get("title") or ""))
+    article["intro"] = base.normalize_text(str(article.get("intro") or ""))
+    sections = article.get("sections") or []
+    if isinstance(sections, list):
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            sec["heading"] = base.normalize_text(str(sec.get("heading") or ""))
+            paragraphs = sec.get("paragraphs") or []
+            if isinstance(paragraphs, list):
+                sec["paragraphs"] = [base.normalize_text(str(p)) for p in paragraphs if str(p).strip()]
+
+
 def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[str, object]:
     article = base.postprocess_article(article, brief)
     _walk_text_fields(article)
+    _normalize_text_fields(article)
     return article
+
+
+def _drop_resolved_base_issues(issues: list[str], article: dict[str, object]) -> list[str]:
+    text = article_text(article)
+    filtered: list[str] = []
+    for issue in issues:
+        if "中文字符与英文单词或数字之间不应添加空格" in issue and not base.has_cjk_alnum_space(text):
+            continue
+        if "全文应使用一致的全角中文标点" in issue and not base.has_ascii_punct_near_cjk(text):
+            continue
+        if "金额、数量等数字应添加千分位逗号" in issue and not base.has_unformatted_quantity_number(text):
+            continue
+        if "不得使用假设或推测性表述" in issue and not any(pattern in text for pattern in base.HYPOTHESIS_PATTERNS):
+            continue
+        filtered.append(issue)
+    return filtered
 
 
 def _has_malformed_party_annotation(text: str) -> bool:
@@ -230,8 +261,10 @@ def _missing_required_party_note(body_text: str, brief: CaseBrief) -> bool:
 
 
 def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_length: bool = True) -> list[str]:
+    postprocess_article(article, brief)
     issues = base.validate_article(article, brief, strict_length=strict_length)
     postprocess_article(article, brief)
+    issues = _drop_resolved_base_issues(issues, article)
     text = article_text(article)
     body_text = _article_body_text(article)
     if _has_malformed_party_annotation(text):

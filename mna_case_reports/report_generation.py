@@ -11,6 +11,8 @@ from .article_quality import assess_quality
 from .article_rules_extra import (
     MAX_CHARS,
     MIN_CHARS,
+    TARGET_MAX_CHARS,
+    TARGET_MIN_CHARS,
     article_text,
     chinese_length,
     postprocess_article,
@@ -46,12 +48,12 @@ def build_prompt(
     if revision_issues and previous_article:
         instruction = "请在不新增事实的前提下修复以下问题："
         if quality_rewrite:
-            instruction = "请保留事实、金额、日期和交易主体，重写文章主线、标题和段落推进，修复以下质量问题："
+            instruction = "请保留事实、金额、日期和交易主体，完整重写文章主线、标题和段落推进，文章净长度必须保持在3,600至3,900字，修复以下质量问题："
         revise_text = "\n" + instruction + json.dumps(revision_issues, ensure_ascii=False) + "\n上一版：" + json.dumps(previous_article, ensure_ascii=False)
     if expansion_only and previous_article:
         revise_text = (
-            "\n下面是上一版文章。请基于事实包和资料线索重新生成一版3,500至4,000字文章，不要拼接补丁段落，不要套模板。"
-            "重写重点是产业位置、交易结构、财务影响、交割承接和同类并购方法；不改变交易主体和已核验事实。"
+            "\n下面是上一版文章。请基于事实包和资料线索完整重写一版3,600至3,900字文章，低于3,500字无效；不要拼接补丁段落，不要套模板。"
+            "重写重点是产业位置、交易结构、财务影响、交割承接和同类并购方法；每章长短根据材料安排，至少有3个超过260字的连续分析段；不改变交易主体和已核验事实。"
             + "\n上一版：" + json.dumps(previous_article, ensure_ascii=False)
         )
 
@@ -66,7 +68,8 @@ def build_prompt(
         "公司首次出现必须在完整名称之后标注简称和股票代码（如上市），例如腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）；上海喜马拉雅科技有限公司（下称“喜马拉雅”）。资料没有披露完整名称或股票代码时不要编造。"
         "全文必须用全角中文标点和中文引号“”，不要用半角引号；中文和英文或数字之间不要加空格。"
         "金额、数量等数字必须使用千分位逗号。事实、数字、信息必须基于给定资料线索和事实包，不能编造资料外事实。"
-        "全文长度控制在3,500至4,000个中文字符。"
+        "全文长度控制在3,500至4,000个中文字符，最稳妥的目标是3,600至3,900字；不要写成2,000多字的摘要。"
+        "不要输出兜底模板段落，不要每章都写成相同段数；至少3个段落要形成超过260字的连续论证。"
         "文章必须覆盖交易时间、交易金额或估值、支付方式或股权比例、交易双方介绍、买方购买理由、卖方接受安排原因或可由披露条款支撑的客观安排依据。"
         "若公开资料没有披露卖方或被整合方的主观动机，必须直接说明未披露，不得编造；但要结合本案已披露的现金要约、预受要约、协议转让价格、股份支付、控制权变化或资产置换等条款分析其接受安排的现实机制。"
         "深度必须覆盖至少三个层面，且优先写足产业判断、交易结构分析和并购方法论意义；可结合财务影响、交割承接、治理边界继续展开。"
@@ -101,8 +104,22 @@ def normalize_article(payload: dict[str, object], brief: CaseBrief) -> dict[str,
     return postprocess_article(article, brief)
 
 
+def _length_score(article: dict[str, object]) -> tuple[int, int]:
+    length = chinese_length(article_text(article))
+    midpoint = (TARGET_MIN_CHARS + TARGET_MAX_CHARS) // 2
+    if TARGET_MIN_CHARS <= length <= TARGET_MAX_CHARS:
+        return (4, -abs(length - midpoint))
+    if MIN_CHARS <= length <= MAX_CHARS:
+        return (3, -abs(length - midpoint))
+    if length < MIN_CHARS:
+        return (1, length)
+    return (2, -abs(length - MAX_CHARS))
+
+
 def expand_to_target_length(article: dict[str, object], brief: CaseBrief, research_rows: list[dict[str, str]], fact_pack: FactPack, narrative_plan: NarrativePlan) -> dict[str, object]:
     article = postprocess_article(article, brief)
+    best_article = article
+    best_score = _length_score(article)
     for attempt in range(3):
         length = chinese_length(article_text(article))
         if MIN_CHARS <= length <= MAX_CHARS:
@@ -110,11 +127,64 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
         if length < MIN_CHARS:
             LOGGER.info("Regenerating report %s for hard length check, attempt %s, current=%s", brief.case_name, attempt + 1, length)
             payload = chat_json(build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True), timeout=240)
-            article = normalize_article(payload, brief)
+            candidate = normalize_article(payload, brief)
+            candidate_score = _length_score(candidate)
+            if candidate_score > best_score:
+                best_article = candidate
+                best_score = candidate_score
+            if candidate_score >= _length_score(article):
+                article = candidate
+            else:
+                article = best_article
         elif length > MAX_CHARS:
             article = trim_article(article)
             if chinese_length(article_text(article)) <= MAX_CHARS:
                 return article
+            score = _length_score(article)
+            if score > best_score:
+                best_article = article
+                best_score = score
+    return postprocess_article(best_article, brief)
+
+
+def _article_validation_score(article: dict[str, object], brief: CaseBrief) -> tuple[int, tuple[int, int]]:
+    hard_issues = validate_article(article, brief)
+    quality_issues = assess_quality(article)
+    return (-len(hard_issues) * 100 - len(quality_issues) * 10, _length_score(article))
+
+
+def final_repair_article(article: dict[str, object], brief: CaseBrief, research_rows: list[dict[str, str]], fact_pack: FactPack, narrative_plan: NarrativePlan) -> dict[str, object]:
+    max_repairs = int(os.getenv("REPORT_FINAL_REPAIR_REVISIONS", "1"))
+    article = expand_to_target_length(article, brief, research_rows, fact_pack, narrative_plan)
+    article = postprocess_article(article, brief)
+    for attempt in range(max_repairs):
+        hard_issues = validate_article(article, brief)
+        quality_issues = assess_quality(article)
+        if not hard_issues and not quality_issues:
+            return article
+        LOGGER.info("Final report repair %s for %s due to hard=%s quality=%s", attempt + 1, brief.case_name, hard_issues, quality_issues)
+        current_score = _article_validation_score(article, brief)
+        payload = chat_json(
+            build_prompt(
+                brief,
+                research_rows,
+                fact_pack=fact_pack,
+                narrative_plan=narrative_plan,
+                revision_issues=hard_issues + quality_issues,
+                previous_article=article,
+                quality_rewrite=bool(quality_issues),
+            ),
+            timeout=240,
+        )
+        candidate = normalize_article(payload, brief)
+        candidate = expand_to_target_length(candidate, brief, research_rows, fact_pack, narrative_plan)
+        candidate = postprocess_article(candidate, brief)
+        candidate_score = _article_validation_score(candidate, brief)
+        if candidate_score >= current_score:
+            article = candidate
+        else:
+            LOGGER.info("Final repair candidate was worse for %s; keeping previous version", brief.case_name)
+            break
     return postprocess_article(article, brief)
 
 
@@ -182,8 +252,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         issues = validate_article(article, brief)
         quality_issues = assess_quality(article)
 
-    article = expand_to_target_length(article, brief, research_rows, fact_pack, narrative_plan)
-    article = postprocess_article(article, brief)
+    article = final_repair_article(article, brief, research_rows, fact_pack, narrative_plan)
     final_issues = validate_article(article, brief)
     final_quality_issues = assess_quality(article)
     if final_issues or final_quality_issues:
