@@ -34,6 +34,14 @@ on:
         description: "Maximum selected candidate pool size. Use 1 with max_attempts=1 for a single-case smoke test."
         required: false
         default: "0"
+      candidate_timeout:
+        description: "Per-candidate timeout seconds. Use 900-1200 for a focused single-case full draft."
+        required: false
+        default: "300"
+      model_timeout:
+        description: "Per-model-call timeout seconds."
+        required: false
+        default: "90"
 
 permissions:
   contents: write
@@ -63,9 +71,9 @@ jobs:
       REPORT_FINAL_REPAIR_REVISIONS: "1"
       REPORT_MAX_GENERATION_ATTEMPTS: ${{ github.event.inputs.max_attempts || '0' }}
       REPORT_CANDIDATE_POOL_MAX: ${{ github.event.inputs.candidate_pool_max || '0' }}
-      REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: "300"
+      REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: ${{ github.event.inputs.candidate_timeout || '300' }}
       REPORT_WORKER_HEARTBEAT_SECONDS: "30"
-      REPORT_MODEL_TIMEOUT_SECONDS: "90"
+      REPORT_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.model_timeout || '90' }}
       REPORT_EXPAND_ON_FAILURE: "0"
       REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: "1"
       MNA_MAX_TITLE_URL_RESOLVES: "10"
