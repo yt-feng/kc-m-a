@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -264,6 +265,40 @@ def normalize_article(payload: dict[str, object], brief: CaseBrief) -> dict[str,
     return postprocess_article(article, brief)
 
 
+def _replace_article_text_fields(article: dict[str, object], replace_fn: Any) -> dict[str, object]:
+    article["title"] = replace_fn(str(article.get("title") or ""))
+    article["intro"] = replace_fn(str(article.get("intro") or ""))
+    sections = article.get("sections") or []
+    if isinstance(sections, list):
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            sec["heading"] = replace_fn(str(sec.get("heading") or ""))
+            paragraphs = sec.get("paragraphs") or []
+            if isinstance(paragraphs, list):
+                sec["paragraphs"] = [replace_fn(str(p)) for p in paragraphs]
+    return article
+
+
+def repair_article_against_fact_pack(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> dict[str, object]:
+    fact_text = json.dumps(fact_pack.to_dict(), ensure_ascii=False)
+    percentages = re.findall(r"\d{1,3}(?:\.\d+)?%", fact_text)
+
+    def replace_placeholder(match: re.Match[str]) -> str:
+        prefix = match.group(1)
+        for pct in percentages:
+            if pct.startswith(prefix + ".") or pct == prefix + "%":
+                return pct
+        return match.group(0)
+
+    def replace_text(text: str) -> str:
+        text = re.sub(r"(\d{1,3})\.x+%", replace_placeholder, text, flags=re.I)
+        return text
+
+    article = _replace_article_text_fields(article, replace_text)
+    return postprocess_article(article, brief)
+
+
 def _length_score(article: dict[str, object]) -> tuple[int, int]:
     length = chinese_length(article_text(article))
     midpoint = (TARGET_MIN_CHARS + TARGET_MAX_CHARS) // 2
@@ -292,7 +327,7 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
                 build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True),
                 timeout=article_model_timeout(240),
             )
-            candidate = normalize_article(payload, brief)
+            candidate = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
             candidate_score = _length_score(candidate)
             if candidate_score > best_score:
                 best_article = candidate
@@ -342,7 +377,7 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
             ),
             timeout=article_model_timeout(240),
         )
-        candidate = normalize_article(payload, brief)
+        candidate = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
         candidate = expand_to_target_length(candidate, brief, research_rows, fact_pack, narrative_plan)
         candidate = postprocess_article(candidate, brief)
         candidate_score = _article_validation_score(candidate, brief)
@@ -408,7 +443,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
             build_fast_draft_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan),
             timeout=article_model_timeout(240),
         )
-        article = normalize_article(payload, brief)
+        article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
         action_notice(f"report_stage case={brief.case_name} stage=fast_draft_done length={chinese_length(article_text(article))}")
         final_issues = validate_article(article, brief)
         final_quality_issues = assess_quality(article)
@@ -425,7 +460,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan),
         timeout=article_model_timeout(240),
     )
-    article = normalize_article(payload, brief)
+    article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
     action_notice(f"report_stage case={brief.case_name} stage=article_draft_done length={chinese_length(article_text(article))}")
     issues = validate_article(article, brief)
     quality_issues = assess_quality(article)
@@ -452,7 +487,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
             ),
             timeout=article_model_timeout(240),
         )
-        article = normalize_article(payload, brief)
+        article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
         action_notice(f"report_stage case={brief.case_name} stage=revision_done round={round_idx + 1} length={chinese_length(article_text(article))}")
         issues = validate_article(article, brief)
         quality_issues = assess_quality(article)

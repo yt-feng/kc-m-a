@@ -35,6 +35,7 @@ LEGAL_NAME_TAIL = r"(?:科技有限公司|股份有限公司|有限责任公司|
 BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”(?:，[^）]+)?）(?!收购|并购|购买|出售|转让|受让|入股|控股|合并)([{CJK}A-Za-z0-9·&]{{0,12}}{LEGAL_NAME_TAIL})")
 DUP_NOTE_PATTERN = re.compile(r"(?P<note>（下称“[^”]+”(?:，[^）]+)?）)(?P=note)+")
 ANY_COMPANY_NOTE_PATTERN = re.compile(r"（下称“[^”]+”(?:，[^）]+)?）")
+PLACEHOLDER_FACT_PATTERN = re.compile(r"(?i)(?:\d+(?:\.\d+)?\.x+%|x{2,}%?|待补充|待确认|占位|TODO|TBD)")
 KNOWN_COMPANY_NOTES = {
     "腾讯音乐娱乐集团": "腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）",
     "Tencent Music Entertainment Group": "腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）",
@@ -72,6 +73,26 @@ def normalize_ticker_punctuation(text: str) -> str:
         .replace("NASDAQ:INTC", "NASDAQ：INTC")
         .replace("NASDAQ： INTC", "NASDAQ：INTC")
     )
+
+
+def _normalize_short_name_notes(text: str) -> str:
+    def repl_combined(match: re.Match[str]) -> str:
+        short = match.group(1).strip()
+        ticker = (match.group(2) or "").strip(" ：:，,")
+        if ticker:
+            return f"（下称“{short}”，股票代码：{ticker}）"
+        return f"（下称“{short}”）"
+
+    def repl_simple(match: re.Match[str]) -> str:
+        short = match.group(1).strip(" “”\"'，,")
+        ticker = (match.group(2) or "").strip(" ：:，,")
+        if ticker:
+            return f"（下称“{short}”，股票代码：{ticker}）"
+        return f"（下称“{short}”）"
+
+    text = re.sub(r"（下称“([^”]+)”）(?:（简称[^，）]*(?:，?股票代码[:：]?([A-Za-z0-9.]+))?）)", repl_combined, text)
+    text = re.sub(r"（简称([^，）]+)(?:，?股票代码[:：]?([A-Za-z0-9.]+))?）", repl_simple, text)
+    return text
 
 
 def _strip_all_notes_after_company(text: str, full_name: str) -> str:
@@ -126,6 +147,7 @@ def strip_company_notes(text: str) -> str:
     """Remove parenthetical short-name notes, useful for titles."""
     text = convert_halfwidth_quotes(str(text or ""))
     text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
+    text = _normalize_short_name_notes(text)
     text = _repair_split_notes(text)
     text = ANY_COMPANY_NOTE_PATTERN.sub("", text)
     return base.normalize_text(text)
@@ -143,6 +165,7 @@ def repair_party_annotation_text(text: str, *, add_known_notes: bool = True) -> 
     """
     text = convert_halfwidth_quotes(str(text or ""))
     text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
+    text = _normalize_short_name_notes(text)
     text = _repair_split_notes(text)
     text = _apply_known_company_notes(text, add_known_notes=add_known_notes)
     return base.normalize_text(text)
@@ -151,6 +174,7 @@ def repair_party_annotation_text(text: str, *, add_known_notes: bool = True) -> 
 def repair_party_annotation_text_once(text: str, seen_notes: set[str]) -> str:
     text = convert_halfwidth_quotes(str(text or ""))
     text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
+    text = _normalize_short_name_notes(text)
     text = _repair_split_notes(text)
     text = _apply_known_company_notes_once(text, seen_notes)
     return base.normalize_text(text)
@@ -212,6 +236,8 @@ def _drop_resolved_base_issues(issues: list[str], article: dict[str, object]) ->
 def _has_malformed_party_annotation(text: str) -> bool:
     if "下文简称" in text:
         return True
+    if "（简称" in text:
+        return True
     if BAD_SPLIT_NOTE_PATTERN.search(text):
         return True
     # A short name note immediately followed by company-name suffix is almost always wrong.
@@ -224,6 +250,10 @@ def _has_malformed_party_annotation(text: str) -> bool:
     if DUP_NOTE_PATTERN.search(text):
         return True
     return False
+
+
+def _has_fact_placeholder(text: str) -> bool:
+    return bool(PLACEHOLDER_FACT_PATTERN.search(text))
 
 
 def _has_halfwidth_quote(text: str) -> bool:
@@ -269,6 +299,8 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
     body_text = _article_body_text(article)
     if _has_malformed_party_annotation(text):
         issues.append("公司首次出现的简称标注位置错误或重复，应写在完整公司名称之后且只出现一次，例如“上海喜马拉雅科技有限公司（下称“喜马拉雅”）”。")
+    if _has_fact_placeholder(text):
+        issues.append("正文不得出现xx%、待补充、待确认、TODO等事实占位符；资料未披露时必须直接写明未披露，已披露数字必须使用准确值。")
     if _missing_required_party_note(body_text, brief):
         issues.append("公司名称首次出现时，应使用完整名称并在其后标注简称和股票代码（如上市）；资料没有披露股票代码时不得编造。")
     if _has_halfwidth_quote(text):

@@ -142,8 +142,12 @@ def _best_sentence(sentences: list[str], hints: tuple[str, ...], *, require_numb
         score = hint_hits * 4
         if any(unit in sentence for unit in ("亿元", "亿美元", "万元", "元/股", "港元/股", "美元/股", "%", "％", "股")):
             score += 3
+        if any(token in sentence for token in ("交易总价款", "股份转让对价", "转让价款", "股份转让价款", "元/股", "每股转让价格")):
+            score += 8
         if any(token in sentence for token in ("收购", "交易", "要约", "转让", "过户", "控制权")):
             score += 2
+        if any(token in sentence for token in ("释义", "本报告书", "信息披露义务人", "以下简称", "下列简称")):
+            score -= 8
         scored.append((score, sentence))
     if not scored:
         return ""
@@ -163,7 +167,8 @@ def _has_transaction_quantity(sentence: str) -> bool:
 
 
 def _fallback_deal_value(current: str, facts: list[str], research_rows: list[dict[str, str]]) -> str:
-    if not _is_missing_fact(current):
+    noisy_current = any(token in _compact_text(current) for token in ("释义", "本报告书", "信息披露义务人", "以下简称", "下列简称"))
+    if not _is_missing_fact(current) and not noisy_current and _has_transaction_quantity(current):
         return normalize_text(_compact_text(current))
     sentences = _candidate_sentences(_research_blob(research_rows)) + facts
     value_sentences = [sentence for sentence in sentences if _has_transaction_quantity(sentence)]
