@@ -296,6 +296,14 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
     final_quality_issues = assess_quality(article)
     if final_issues or final_quality_issues:
         LOGGER.warning("Report still has validation/quality issues after narrative pipeline: %s hard=%s quality=%s", brief.case_name, final_issues, final_quality_issues)
+        if os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") == "1":
+            action_notice(
+                f"report_stage case={brief.case_name} stage=validation_failed_returning_draft "
+                f"hard={len(final_issues)} quality={len(final_quality_issues)}"
+            )
+            article["validation_issues"] = final_issues
+            article["quality_issues"] = final_quality_issues
+            return postprocess_article(article, brief)
         raise RuntimeError(f"Report quality validation failed for {brief.case_name}: hard={final_issues} quality={final_quality_issues}")
     else:
         LOGGER.info("Report passed hard validation and quality checks: %s length=%s", brief.case_name, chinese_length(article_text(article)))

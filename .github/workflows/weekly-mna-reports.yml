@@ -42,6 +42,14 @@ on:
         description: "Per-model-call timeout seconds."
         required: false
         default: "90"
+      allow_draft_on_validation_failure:
+        description: "Write a DOCX draft even if article quality validation fails. Manual smoke-test only."
+        required: false
+        default: "0"
+      docx_validate_warn_only:
+        description: "Do not fail the workflow on DOCX validator issues. Manual smoke-test only."
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -74,6 +82,8 @@ jobs:
       REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: ${{ github.event.inputs.candidate_timeout || '300' }}
       REPORT_WORKER_HEARTBEAT_SECONDS: "30"
       REPORT_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.model_timeout || '90' }}
+      REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE: ${{ github.event.inputs.allow_draft_on_validation_failure || '0' }}
+      REPORT_DOCX_VALIDATE_WARN_ONLY: ${{ github.event.inputs.docx_validate_warn_only || '0' }}
       REPORT_EXPAND_ON_FAILURE: "0"
       REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: "1"
       MNA_MAX_TITLE_URL_RESOLVES: "10"
@@ -124,7 +134,11 @@ jobs:
           if [ -d "$REPORT_OUTPUT_ROOT" ]; then
             mkdir -p "$REPORT_OUTPUT_ROOT/_manifests"
             mapfile -t generated_docx < "$RUNNER_TEMP/generated_weekly_docx_files.txt"
-            python -m mna_case_reports.docx_validate "${generated_docx[@]}" --write-json "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json"
+            validate_args=()
+            if [ "${REPORT_DOCX_VALIDATE_WARN_ONLY:-0}" = "1" ]; then
+              validate_args+=(--warn-only)
+            fi
+            python -m mna_case_reports.docx_validate "${generated_docx[@]}" --write-json "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json" "${validate_args[@]}"
             find "$REPORT_OUTPUT_ROOT/_manifests" -type f -name "*.json" -newer "$RUNNER_TEMP/weekly_reports_start_marker" -print | sort > "$RUNNER_TEMP/generated_weekly_manifest_files.txt" || true
             echo "Generated or overwritten manifest files in this run:"
             cat "$RUNNER_TEMP/generated_weekly_manifest_files.txt" || true
