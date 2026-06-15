@@ -1,6 +1,6 @@
 # kc-m-a 架构文档：Excel Deal Flow 与 Weekly M&A Case Reports
 
-更新时间：2026-06-03
+更新时间：2026-06-15
 
 ## 1. 总体判断
 
@@ -9,7 +9,7 @@
 1. **Weekly M&A cases Excel**：每周生成并购案例一览 Excel，用于 deal flow 扫描、候选留痕和后续选题。
 2. **Weekly M&A Case Reports Word**：每周生成并购案例分析 Word，用于深度案例复盘。
 
-两条 pipeline 共享一个核心前提：DeepSeek API 不联网，所有公告、新闻、PDF、监管文件和搜索结果都必须由代码先抓取、筛选、压缩，再传入模型。
+两条 pipeline 共享一个核心前提：LLM 不联网，所有公告、新闻、PDF、监管文件和搜索结果都必须由代码先抓取、筛选、压缩，再传入模型。Excel 结构化和轻量事实处理优先使用快模型；Word 长文正文、扩写和修订属于复杂任务，单独路由到强模型。
 
 ## 2. Excel deal flow pipeline
 
@@ -135,14 +135,56 @@ case_selection
   -> collect_research_context
   -> build_fact_pack
   -> validate_fact_pack
-  -> generate_outline
-  -> validate_outline
+  -> build_narrative_plan
+  -> validate_narrative_plan
+  -> route long-form article calls to article model
   -> generate_article body
-  -> validate_article
+  -> validate_article + assess_quality
   -> targeted revision
   -> length expansion / trim
   -> write_docx
 ```
+
+正文生成前必须先形成“交易前因后果链”：
+
+```text
+交易前状态
+  -> 触发事件/发起路径
+  -> 交易目标
+  -> 结构选择
+  -> 产业、财务、治理和方法论分析
+```
+
+这条链用于解决文章只罗列交易结果、没有解释“为什么做这个 deal、这个 deal 怎么发起、为了实现什么目标”的问题。若公开资料没有披露主观动机或完整发起过程，文章必须明确披露边界，并用公告、协议、要约、董事会/股东会决议、持股变化、资金来源和交割条件等客观条款解释交易机制，不能编造。
+
+## 3.2 任务分层与模型路由
+
+轻量任务继续走默认 DeepSeek 快模型：
+
+- 候选筛选和去重。
+- 原始链接清洗。
+- 事实包抽取。
+- 叙事计划。
+
+复杂长文任务走文章模型：
+
+- 初稿正文。
+- 字数扩写。
+- 质量重写。
+- 最终修复。
+
+GitHub Action 通过以下环境变量控制：
+
+```text
+REPORT_ARTICLE_MODEL_PROVIDER=rkapi
+REPORT_ARTICLE_BASE_URL=https://rkapi.com/v1
+REPORT_ARTICLE_MODEL=gpt-5.5
+REPORT_ARTICLE_REASONING_EFFORT=xhigh
+REPORT_ARTICLE_FALLBACK_PROVIDER=deepseek-pro
+REPORT_ARTICLE_DEEPSEEK_MODEL=deepseek-v4-pro
+```
+
+RKAPI 发生 5xx、Cloudflare 504 或 timeout 时，`article_chat_json()` 会先重试，再 fallback 到 `deepseek-v4-pro`，避免单篇正文生成卡死导致整轮 Action 无产物。
 
 ## 4. 最新写作与排版规则
 
@@ -151,6 +193,7 @@ case_selection
 - 文档质量优先于格式统一，不要过度结构化、模式化；结构应服务于内容。
 - 每篇文章可根据材料特点调整叙述重点，可侧重产业判断、交易结构、标的质量、交割承接、财务影响或并购方法论意义。
 - 文章要有深度，除案例拆解外，应包含包括但不限于产业判断、交易结构分析和并购方法论意义。
+- 文章前部必须先讲清交易前因后果：交易前是什么状态，什么事项触发或启动交易，谁通过什么路径发起交易，交易希望实现什么目标。
 - 文章风格应在学术严谨性和可读性之间保持平衡，专业、克制、有判断力，使用流畅自然的中文。
 - 客观中性，不使用负面化、口号化、广告化或宏观敏感表达。
 - 读者画像只用于控制深度，不得在正文出现“上市公司CEO”“上市公司董事长”“读者”等提示语。
@@ -258,7 +301,36 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 资料没有披露的字段不编造。
 - 若缺金额、时间线、双方名称或数据，会写入 `validation_issues` 并进入日志。
 
-### 5.4 `outline_generation.py`
+### 5.4 `narrative_generation.py`
+
+负责生成文章主线，不直接写正文。
+
+输出字段包括：
+
+```json
+{
+  "core_question": "...",
+  "central_thesis": "...",
+  "narrative_focus": "...",
+  "deal_origin_chain": "...",
+  "initiation_mechanism": "...",
+  "strategic_objective": "...",
+  "title_direction": "...",
+  "structure_logic": "...",
+  "depth_angles": [...],
+  "chapter_directions": [...],
+  "must_cover": [...],
+  "avoid_patterns": [...]
+}
+```
+
+其中 `deal_origin_chain`、`initiation_mechanism`、`strategic_objective` 是强制字段，分别回答：
+
+- 交易发生前的股权、业务、经营、产业或控制权状态。
+- 交易如何被发起或触发，例如公告、协议、要约、董事会/股东会决议、监管文件或交割安排。
+- 交易希望实现的目标，例如取得控制权、内部整合、产业协同、资产注入、退出变现、优化资本结构或补强业务。
+
+### 5.5 `outline_generation.py`
 
 负责生成 4-7 个客观、中性、克制的章节标题。
 
@@ -269,7 +341,9 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 最后一章必须是 `N、结语：副标题`，N 按实际章节数编号。
 - 大纲不是固定模板，后续应按案例材料特点动态调整。
 
-### 5.5 `article_rules.py`
+当前主线以 `narrative_generation.py` 的叙事计划为准；`outline_generation.py` 保留为章节标题辅助能力。
+
+### 5.6 `article_rules.py`
 
 负责：
 
@@ -283,20 +357,32 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 数据密度检查：交易金额、时间线、财务/经营数字、双方基本介绍、双方接受交易安排的原因
 - 过长自动裁剪，过短追加事实段落
 
-### 5.6 `report_generation.py`
+### 5.7 `article_quality.py`
+
+负责软质量检查，重点识别：
+
+- 结构模板化。
+- 标题平淡或标题党。
+- 产业判断、交易结构和并购方法论不足。
+- 结语泛泛而谈。
+- 文章前部缺少交易前状态、发起机制或交易目标。
+- 数值逻辑矛盾，例如预受/接受比例超过九成却写“预受率严重不足”。
+
+### 5.8 `report_generation.py`
 
 现在变为 orchestration 层，不再承载所有规则：
 
 1. 调用 `collect_research_context`
 2. 调用 `build_fact_pack`
-3. 调用 `generate_outline`
-4. 基于事实包和大纲生成正文
-5. 调用 `validate_article`
-6. 定向修订非字数问题
-7. 字数不足时调用扩写；仍不足时追加事实段落
-8. 输出 article dict 给 `docx_writer`
+3. 调用 `build_narrative_plan`
+4. 按任务分层选择文章模型或 fallback 模型
+5. 基于事实包和叙事计划生成正文
+6. 调用 `validate_article` 和 `assess_quality`
+7. 定向修订非字数问题
+8. 字数不足时调用扩写；过长时裁剪
+9. 输出 article dict 给 `docx_writer`
 
-### 5.7 `docx_writer.py`
+### 5.9 `docx_writer.py`
 
 负责 Word 输出：
 
@@ -335,6 +421,9 @@ DeepSeek 不联网，因此这一层是事实质量的核心。
 - 是否含口号化/负面化词
 - 是否含交易金额和日期
 - 是否含财务数据
+- 文章前部是否交代交易前状态、发起机制和交易目标
+- 是否存在事实占位符，例如 `xx%`、`待补充`、`TODO`
+- 是否存在明显数值逻辑矛盾
 - 最后一章编号是否正确
 - 文档网格、标题、正文段落格式
 
@@ -365,10 +454,10 @@ GitHub Action 已支持 offset，并会上传 artifact、保存 progress manifes
    - 按来源可信度排序。
    - 给每条事实保留 source URL。
    - 对金额、日期、财务数据做字段级 confidence。
-3. `outline_generation.py` 可进一步按案例分类切换默认大纲，并减少默认模板感。
-4. `report_generation.py` 仍输出 JSON，长期可考虑改成 Markdown/plain text，降低长篇 JSON 解析风险。
-5. 需要下载生成的 docx 做真实 Word 格式验证，确认 Word UI 中确实显示“首行缩进 2 字符、段后 0 行、文档网格 linePitch=312”。
-6. 需要新增格式检查脚本，自动打开 `.docx` 的 XML 验证 `w:docGrid`、标题字号、缩进和段距。
+3. `narrative_generation.py` 可继续增强交易发起过程抽取，尤其是区分“公开披露的目标”和“由条款推导的客观机制”。
+4. `outline_generation.py` 可进一步按案例分类切换默认大纲，并减少默认模板感。
+5. `report_generation.py` 仍输出 JSON，长期可考虑改成 Markdown/plain text，降低长篇 JSON 解析风险。
+6. 需要继续下载生成的 docx 做真实 Word 格式验证，确认 Word UI 中确实显示“首行缩进 2 字符、段后 0 行、文档网格 linePitch=312”。
 
 ## 8. 下一步建议
 

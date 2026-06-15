@@ -65,6 +65,18 @@ FINANCIAL_TERMS = (
     "收入", "营收", "净利润", "毛利", "EBITDA", "现金流", "负债", "资产", "市值", "估值倍数",
     "利润率", "资产负债率", "订单", "产能", "客户", "用户",
 )
+ORIGIN_BACKGROUND_TERMS = (
+    "交易前", "此前", "原控股股东", "股权结构", "控制权状态", "无实际控制人", "经营压力",
+    "业务状态", "产业位置", "主业", "上市平台", "分散", "承压", "转型",
+)
+ORIGIN_INITIATION_TERMS = (
+    "发起", "启动", "公告", "披露", "签署", "董事会", "股东会", "决议", "要约", "协议",
+    "预案", "报告书", "监管", "过户", "交割", "触发",
+)
+ORIGIN_OBJECTIVE_TERMS = (
+    "目的", "目标", "旨在", "为了", "意在", "希望", "取得控制权", "提升持股", "内部整合",
+    "产业协同", "资产注入", "退出", "变现", "优化资本结构", "补强", "并表", "治理",
+)
 
 
 def _sections(article: dict[str, object]) -> list[dict[str, Any]]:
@@ -94,6 +106,16 @@ def _last_section_text(article: dict[str, object]) -> str:
     paragraphs = last.get("paragraphs") or []
     if isinstance(paragraphs, list):
         parts.extend(str(p) for p in paragraphs)
+    return "\n".join(parts)
+
+
+def _early_text(article: dict[str, object]) -> str:
+    parts = [str(article.get("intro") or "")]
+    for sec in _sections(article)[:2]:
+        parts.append(str(sec.get("heading") or ""))
+        paragraphs = sec.get("paragraphs") or []
+        if isinstance(paragraphs, list):
+            parts.extend(str(p) for p in paragraphs[:3])
     return "\n".join(parts)
 
 
@@ -210,6 +232,14 @@ def assess_quality(article: dict[str, object]) -> list[str]:
         issues.append("文章缺少因果分析和判断句，需要解释为什么这些交易事实会影响估值、条款、交割或整合结果。")
     if _has_high_acceptance_contradiction(text):
         issues.append("正文存在数值逻辑矛盾：预受/接受比例已超过九成时，不得再写预受率严重不足、远低于预期或不被市场接受。")
+
+    early_text = _early_text(article)
+    if _count_terms(early_text, ORIGIN_BACKGROUND_TERMS) < 1:
+        issues.append("文章前部没有交代交易前状态，需要说明交易发生前的股权结构、业务状态、经营压力、产业位置或控制权状态。")
+    if _count_terms(early_text, ORIGIN_INITIATION_TERMS) < 2:
+        issues.append("文章前部没有讲清交易如何发起，需要说明触发交易的公告、协议、要约、董事会/股东会决议、监管文件或推进路径。")
+    if _count_terms(early_text, ORIGIN_OBJECTIVE_TERMS) < 1:
+        issues.append("文章前部没有说明交易目标，需要解释为什么要做这笔交易，以及希望实现取得控制权、内部整合、产业协同、退出变现、优化资本结构或补强业务等哪类目标。")
 
     last_text = _last_section_text(article)
     if any(phrase in last_text for phrase in GENERIC_CONCLUSION_PHRASES):
