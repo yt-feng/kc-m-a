@@ -54,6 +54,13 @@ def action_notice(message: str) -> None:
         print(safe, flush=True)
 
 
+def env_flag(name: str, *, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @contextmanager
 def candidate_timeout(seconds: int, case_name: str):
     if seconds <= 0 or not hasattr(signal, "SIGALRM"):
@@ -116,6 +123,16 @@ def max_generation_attempts(requested_count: int) -> int:
 
 def per_candidate_timeout_seconds() -> int:
     return int(os.getenv("REPORT_PER_CANDIDATE_TIMEOUT_SECONDS", "900"))
+
+
+def use_static_smoke_pool(args: argparse.Namespace, pool_count: int) -> bool:
+    return (
+        args.mode == "weekly"
+        and args.count == 1
+        and pool_count <= 1
+        and env_flag("REPORT_ALLOW_STATIC_WEEKLY_POOL")
+        and env_flag("REPORT_STATIC_SMOKE_FIRST", default=True)
+    )
 
 
 def _generate_article_worker(brief: CaseBrief, queue: multiprocessing.Queue) -> None:
@@ -226,9 +243,18 @@ def main() -> None:
 
     if args.mode == "backfill":
         LOGGER.info("Discovering backfill cases")
+        action_notice("candidate_pool_stage=backfill_discovery_start")
         briefs = discover_backfill_cases(max((args.offset + pool_count) * 3, 30))
+        action_notice(f"candidate_pool_stage=backfill_discovery_done candidates={len(briefs)}")
+    elif use_static_smoke_pool(args, pool_count):
+        LOGGER.info("Using static-first weekly smoke-test candidate pool")
+        action_notice("candidate_pool_stage=static_smoke_start")
+        briefs = extended_pool_briefs()
+        briefs.extend(seed_briefs())
+        action_notice(f"candidate_pool_stage=static_smoke_done candidates={len(briefs)}")
     else:
         LOGGER.info("Loading weekly report candidates from latest structured Excel")
+        action_notice("candidate_pool_stage=excel_structured_start")
         briefs = briefs_from_latest_weekly_workbook(Path(args.weekly_output_dir))
         required_domestic = min(args.min_domestic, args.count)
         ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
@@ -243,25 +269,35 @@ def main() -> None:
             domestic_ready_count,
             domestic_source_ready_count,
         )
+        action_notice(
+            f"candidate_pool_stage=excel_structured_done total={len(briefs)} ready={ready_count} "
+            f"source_ready={source_ready_count} domestic_source_ready={domestic_source_ready_count}"
+        )
         if ready_count < args.count or source_ready_count < args.count or domestic_source_ready_count < required_domestic:
             LOGGER.info("Summarizing raw candidates from latest weekly Excel because structured Excel source-ready pool is below requested count")
+            action_notice(f"candidate_pool_stage=excel_raw_summary_start max_items={args.max_raw_items}")
             excel_raw_items = raw_items_from_latest_weekly_workbook(Path(args.weekly_output_dir), max_items=args.max_raw_items)
             excel_raw_briefs = summarize_raw_items(excel_raw_items, target_count=max(pool_count * 3, 12))
             LOGGER.info("Raw weekly Excel candidate pool: raw=%s summarized=%s", len(excel_raw_items), len(excel_raw_briefs))
+            action_notice(f"candidate_pool_stage=excel_raw_summary_done raw={len(excel_raw_items)} summarized={len(excel_raw_briefs)}")
             briefs.extend(excel_raw_briefs)
             ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
             source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
             domestic_source_ready_count = sum(1 for brief in briefs if brief.is_domestic and is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
         if ready_count < args.count or source_ready_count < args.count or domestic_source_ready_count < required_domestic:
             LOGGER.info("Collecting live weekly report candidates because Excel source-ready pool is below requested count")
+            action_notice(f"candidate_pool_stage=live_weekly_start days={args.days} max_items={args.max_raw_items}")
             raw_items = lightweight_weekly_candidates(args.days, args.max_raw_items)
             live_briefs = summarize_raw_items(raw_items, target_count=max(pool_count * 3, 12))
             LOGGER.info("Live weekly candidate pool: raw=%s summarized=%s", len(raw_items), len(live_briefs))
+            action_notice(f"candidate_pool_stage=live_weekly_done raw={len(raw_items)} summarized={len(live_briefs)}")
             briefs.extend(live_briefs)
         if os.getenv("REPORT_ALLOW_STATIC_WEEKLY_POOL", "0") == "1":
             LOGGER.info("Static weekly report pool is explicitly enabled")
+            action_notice("candidate_pool_stage=static_append_start")
             briefs.extend(extended_pool_briefs())
             briefs.extend(seed_briefs())
+            action_notice(f"candidate_pool_stage=static_append_done total={len(briefs)}")
 
     selected_all = choose_balanced(
         briefs,
