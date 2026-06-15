@@ -66,6 +66,10 @@ on:
         description: "Include static/seed report cases when the weekly pool is too weak. Smoke-test only."
         required: false
         default: "0"
+      allow_weak_single_candidate:
+        description: "Bypass weak-candidate preflight for a single smoke-test report. Smoke-test only."
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -112,6 +116,7 @@ jobs:
       REPORT_FAST_DRAFT_MODE: ${{ github.event.inputs.fast_draft_mode || '0' }}
       REPORT_DOCX_VALIDATE_WARN_ONLY: ${{ github.event.inputs.docx_validate_warn_only || '0' }}
       REPORT_ALLOW_STATIC_WEEKLY_POOL: ${{ github.event.inputs.allow_static_weekly_pool || '0' }}
+      REPORT_ALLOW_WEAK_SINGLE_CANDIDATE: ${{ github.event.inputs.allow_weak_single_candidate || '0' }}
       REPORT_EXPAND_ON_FAILURE: "0"
       REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: "1"
       MNA_MAX_TITLE_URL_RESOLVES: "10"

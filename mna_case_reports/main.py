@@ -222,6 +222,7 @@ def main() -> None:
         f"report_run_start mode={args.mode} count={args.count} min_domestic={args.min_domestic} "
         f"pool_count={pool_count} max_attempts={max_attempts} candidate_timeout_s={candidate_timeout_seconds}"
     )
+    allow_weak_single_candidate = args.count == 1 and os.getenv("REPORT_ALLOW_WEAK_SINGLE_CANDIDATE", "0") == "1"
 
     if args.mode == "backfill":
         LOGGER.info("Discovering backfill cases")
@@ -294,20 +295,24 @@ def main() -> None:
             continue
         attempted += 1
         if not is_report_ready_candidate(brief):
-            LOGGER.info("Skipping report candidate before research because preflight is weak: %s [%s]", brief.case_name, brief.category)
-            action_notice(f"candidate_skip_preflight attempt={attempted} case={brief.case_name}")
-            failures.append({"case_name": brief.case_name, "category": brief.category, "error": "preflight rejected weak report candidate"})
-            write_progress(progress_path, {
-                "mode": args.mode,
-                "run_label": run_label,
-                "requested_count": args.count,
-                "candidate_count": len(selected),
-                "attempted_count": attempted,
-                "offset": args.offset,
-                "written": written,
-                "failures": failures,
-            })
-            continue
+            if allow_weak_single_candidate:
+                LOGGER.info("Proceeding with weak single-report candidate because smoke-test override is enabled: %s [%s]", brief.case_name, brief.category)
+                action_notice(f"candidate_weak_override attempt={attempted} case={brief.case_name}")
+            else:
+                LOGGER.info("Skipping report candidate before research because preflight is weak: %s [%s]", brief.case_name, brief.category)
+                action_notice(f"candidate_skip_preflight attempt={attempted} case={brief.case_name}")
+                failures.append({"case_name": brief.case_name, "category": brief.category, "error": "preflight rejected weak report candidate"})
+                write_progress(progress_path, {
+                    "mode": args.mode,
+                    "run_label": run_label,
+                    "requested_count": args.count,
+                    "candidate_count": len(selected),
+                    "attempted_count": attempted,
+                    "offset": args.offset,
+                    "written": written,
+                    "failures": failures,
+                })
+                continue
         LOGGER.info("Generating report attempt %s from candidate %s/%s: %s [%s]", attempted, index, len(selected), brief.case_name, brief.category)
         action_notice(f"candidate_start attempt={attempted}/{max_attempts} selected_index={index}/{len(selected)} case={brief.case_name} category={brief.category}")
         write_progress(progress_path, {
