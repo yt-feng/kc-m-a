@@ -49,6 +49,12 @@ GENERIC_CONCLUSION_PHRASES = (
     "未来仍需观察",
 )
 
+MEDIA_TONE_EXAMPLES = (
+    "悬疑", "尖厉问号", "尖锐问号", "杠杆悬河", "治理真空", "协同的虚实",
+    "陡坡", "搏杀", "资本游戏", "暗礁", "蒸发", "拉响", "抛出", "剑指",
+    "闪电成立", "新壳", "杠杆入主", "撬动", "迷局", "戏码", "狂飙", "风暴",
+)
+
 INDUSTRY_TERMS = (
     "行业", "产业", "产业链", "竞争格局", "市场格局", "供需", "周期", "渗透率", "客户结构",
     "技术路线", "商业模式", "产品结构", "区域市场", "监管环境", "上市平台", "资源禀赋",
@@ -123,6 +129,10 @@ def _count_terms(text: str, terms: tuple[str, ...]) -> int:
     return sum(1 for term in terms if term in text)
 
 
+def _tone_hits(text: str) -> list[str]:
+    return [term for term in MEDIA_TONE_EXAMPLES if term in text]
+
+
 def _has_causal_analysis(text: str) -> bool:
     return any(token in text for token in ("原因在于", "这意味着", "其约束在于", "真正关键", "底层逻辑", "对应的是", "不是", "而是", "因此", "从而"))
 
@@ -174,6 +184,21 @@ def assess_quality(article: dict[str, object]) -> list[str]:
     paragraphs = _paragraphs(article)
 
     issues.extend(_title_quality_issues(article))
+
+    prominent_tone_hits = _tone_hits(str(article.get("title") or "") + "\n" + "\n".join(headings))
+    body_tone_hits = _tone_hits(text)
+    if prominent_tone_hits:
+        issues.append(
+            "标题或章节标题偏媒体化、戏剧化；这些词只是风格问题示例，不要机械替换，而应重写为专业克制的交易结构、产业位置、财务影响或治理安排表述："
+            + "、".join(prominent_tone_hits[:8])
+            + "。"
+        )
+    elif len(body_tone_hits) >= 3:
+        issues.append(
+            "正文出现较多媒体化、戏剧化表达；请在不改变事实的前提下重写相关段落，使语气接近专业并购案例研究，而不是新闻报道或评论标题："
+            + "、".join(body_tone_hits[:8])
+            + "。"
+        )
 
     template_heading_count = _template_heading_count(headings)
     if template_heading_count >= 2:

@@ -160,6 +160,27 @@ def external_evidence_count(research_rows: list[dict[str, str]]) -> int:
     return sum(1 for row in research_rows if (row.get("evidence_type") or "") != "structured_seed")
 
 
+def enforce_hard_length(article: dict[str, object], brief: CaseBrief, *, stage: str) -> dict[str, object]:
+    article = postprocess_article(article, brief)
+    length = chinese_length(article_text(article))
+    if length <= MAX_CHARS:
+        return article
+    action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_start length={length}")
+    trimmed = trim_article(article, MAX_CHARS)
+    trimmed = postprocess_article(trimmed, brief)
+    trimmed_length = chinese_length(article_text(trimmed))
+    action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_done length={trimmed_length}")
+    if trimmed_length <= MAX_CHARS:
+        return trimmed
+    LOGGER.warning(
+        "Hard trim still above max for %s stage=%s length=%s",
+        brief.case_name,
+        stage,
+        trimmed_length,
+    )
+    return trimmed
+
+
 def build_prompt(
     brief: CaseBrief,
     research_rows: list[dict[str, str]],
@@ -175,11 +196,11 @@ def build_prompt(
     if revision_issues and previous_article:
         instruction = "请在不新增事实的前提下修复以下问题："
         if quality_rewrite:
-            instruction = "请保留事实、金额、日期和交易主体，完整重写文章主线、标题和段落推进，文章净长度必须保持在3,600至3,900字，修复以下质量问题："
+            instruction = "请保留事实、金额、日期和交易主体，完整重写文章主线、标题和段落推进，文章净长度必须保持在3,550至3,800字，超过4,000字无效，修复以下质量问题："
         revise_text = "\n" + instruction + json.dumps(revision_issues, ensure_ascii=False) + "\n上一版：" + json.dumps(previous_article, ensure_ascii=False)
     if expansion_only and previous_article:
         revise_text = (
-            "\n下面是上一版文章。请基于事实包和资料线索完整重写一版3,600至3,900字文章，低于3,500字无效；不要拼接补丁段落，不要套模板。"
+            "\n下面是上一版文章。请基于事实包和资料线索完整重写一版3,550至3,800字文章，低于3,500字或超过4,000字都无效；不要拼接补丁段落，不要套模板。"
             "重写重点是产业位置、交易结构、财务影响、交割承接和同类并购方法；每章长短根据材料安排，至少有3个超过260字的连续分析段；不改变交易主体和已核验事实。"
             + "\n上一版：" + json.dumps(previous_article, ensure_ascii=False)
         )
@@ -192,10 +213,11 @@ def build_prompt(
         "请写一篇并购案例研究报告，不要写新闻摘要，也不要套固定模板。"
         "必须根据材料自行生成4至7个章节，章节数量、顺序和长短由材料的信息量决定，结构服务于内容，不追求格式统一。"
         "标题要采用主标题：副标题形式，包含交易双方名称或简称，并点出本案核心交易逻辑或分析重点；不能只写交易复盘、案例分析、交易启示，也不能标题党。"
+        "标题、章节标题和正文语气必须专业、克制，像并购案例研究或投委会备忘录，而不是媒体报道；不要使用悬疑、问号、搏杀、资本游戏、暗礁、拉响、剑指、闪电成立、新壳入主等戏剧化表达，相关词只是风格示例，真正要求是用交易结构、产业位置、财务影响或治理安排来概括判断。"
         "公司首次出现必须在完整名称之后标注简称和股票代码（如上市），例如腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）；上海喜马拉雅科技有限公司（下称“喜马拉雅”）。资料没有披露完整名称或股票代码时不要编造。"
         "全文必须用全角中文标点和中文引号“”，不要用半角引号；中文和英文或数字之间不要加空格。"
         "金额、数量等数字必须使用千分位逗号。事实、数字、信息必须基于给定资料线索和事实包，不能编造资料外事实。"
-        "全文长度控制在3,500至4,000个中文字符，最稳妥的目标是3,600至3,900字；不要写成2,000多字的摘要。"
+        "全文长度控制在3,500至4,000个中文字符，这是硬性要求；最稳妥的目标是3,550至3,800字，超过4,000字无效；不要写成2,000多字的摘要。"
         "不要输出兜底模板段落，不要每章都写成相同段数；至少3个段落要形成超过260字的连续论证。"
         "正文开头和前1至2个章节必须先讲清楚本案的前因后果：交易发生前的股权结构、业务状态、经营压力、产业位置或控制权状态；触发交易的公告、协议、要约、董事会/股东会决议、监管文件或市场事件；交易由谁发起、通过什么路径发起；交易希望实现的目标，例如取得控制权、内部整合、产业协同、资产注入、退出变现、优化资本结构或补强业务。"
         "不要一开篇就只罗列交易结果和数字；必须解释为什么会有这笔交易、它是怎样被推进出来的、这种交易结构为什么服务于目标。"
@@ -240,8 +262,8 @@ def build_fast_draft_prompt(
     system_prompt = "你是严谨的并购案例研究作者。只输出JSON，不编造事实。"
     user_prompt = (
         "请基于事实包快速生成一篇可直接写入Word的中文并购案例分析稿。"
-        "标题采用主标题：副标题，正文3,500至4,000字，4至6个章节。"
-        "不要写模板化套话，不要写“并购不是终点，整合才是开始”。"
+        "标题采用主标题：副标题，正文3,500至4,000字，最稳妥目标是3,550至3,800字，4至6个章节。"
+        "不要写模板化套话，不要写“并购不是终点，整合才是开始”。语气专业、克制，不用悬疑、问号、资本游戏、暗礁、剑指、新壳入主等媒体化表达；这些词只是风格示例，具体写法要改成交易结构、产业位置、财务影响或治理安排判断。"
         "正文前部必须讲清本案前因后果：交易前是什么状态，什么事项触发或启动交易，谁通过什么路径发起交易，交易希望实现什么目标；资料未披露时要明确写明未披露并转向已披露条款的客观机制。"
         "每章必须紧扣本案事实，覆盖产业判断、交易结构、交易条款、买方逻辑、卖方或股东接受机制、并购方法论意义。"
         "中文和英文或数字之间不要加空格；金额、股份数、比例等数字使用千分位逗号；公司首次出现按完整名称标注简称和股票代码（如披露）。"
@@ -459,6 +481,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         )
         article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
         action_notice(f"report_stage case={brief.case_name} stage=fast_draft_done length={chinese_length(article_text(article))}")
+        article = enforce_hard_length(article, brief, stage="fast_draft")
         final_issues = validate_article(article, brief)
         final_quality_issues = assess_quality(article)
         if final_issues or final_quality_issues:
@@ -467,7 +490,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
                 raise RuntimeError(f"Report quality validation failed for {brief.case_name}: hard={final_issues} quality={final_quality_issues}")
             article["validation_issues"] = final_issues
             article["quality_issues"] = final_quality_issues
-        return postprocess_article(article, brief)
+        return enforce_hard_length(article, brief, stage="fast_draft_return")
 
     action_notice(f"report_stage case={brief.case_name} stage=article_draft_start")
     payload = article_chat_json(
@@ -476,6 +499,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
     )
     article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
     action_notice(f"report_stage case={brief.case_name} stage=article_draft_done length={chinese_length(article_text(article))}")
+    article = enforce_hard_length(article, brief, stage="article_draft")
     issues = validate_article(article, brief)
     quality_issues = assess_quality(article)
     max_revisions = int(os.getenv("REPORT_MAX_REVISIONS", "3"))
@@ -502,12 +526,14 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
             timeout=article_model_timeout(240),
         )
         article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
+        article = enforce_hard_length(article, brief, stage=f"revision_{round_idx + 1}")
         action_notice(f"report_stage case={brief.case_name} stage=revision_done round={round_idx + 1} length={chinese_length(article_text(article))}")
         issues = validate_article(article, brief)
         quality_issues = assess_quality(article)
 
     action_notice(f"report_stage case={brief.case_name} stage=final_repair_pipeline_start length={chinese_length(article_text(article))}")
     article = final_repair_article(article, brief, research_rows, fact_pack, narrative_plan)
+    article = enforce_hard_length(article, brief, stage="final_repair")
     final_issues = validate_article(article, brief)
     final_quality_issues = assess_quality(article)
     if final_issues or final_quality_issues:
@@ -519,8 +545,8 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
             )
             article["validation_issues"] = final_issues
             article["quality_issues"] = final_quality_issues
-            return postprocess_article(article, brief)
+            return enforce_hard_length(article, brief, stage="validation_failed_return")
         raise RuntimeError(f"Report quality validation failed for {brief.case_name}: hard={final_issues} quality={final_quality_issues}")
     else:
         LOGGER.info("Report passed hard validation and quality checks: %s length=%s", brief.case_name, chinese_length(article_text(article)))
-    return article
+    return enforce_hard_length(article, brief, stage="final_return")

@@ -8,8 +8,8 @@ from typing import Any
 from .case_selection import CaseBrief
 
 MIN_CHARS = 3500
-TARGET_MIN_CHARS = 3600
-TARGET_MAX_CHARS = 3900
+TARGET_MIN_CHARS = 3550
+TARGET_MAX_CHARS = 3800
 MAX_CHARS = 4000
 
 CJK = r"\u4e00-\u9fff"
@@ -228,6 +228,25 @@ UNFORMATTED_QUANTITY_RE = re.compile(rf"(?<![\d.,])\d{{4,}}(?![\d.,])(?=\s*(?:{Q
 def format_thousands(text: str) -> str:
     text = UNFORMATTED_QUANTITY_RE.sub(_format_number_with_commas, text)
     return text
+
+
+def _trim_text_piece(text: str, target_len: int, *, min_len: int = 180) -> str:
+    text = str(text or "")
+    text = normalize_text(text)
+    if len(text) <= target_len:
+        return text
+    target_len = max(min_len, target_len)
+    cut = target_len
+    window_start = max(min_len, target_len - 60)
+    for punct in ("。", "；", "，", "、"):
+        idx = text.rfind(punct, window_start, target_len)
+        if idx >= window_start:
+            cut = idx + 1
+            break
+    trimmed = text[:cut].rstrip("，；、：: ")
+    if trimmed and trimmed[-1] not in "。！？；":
+        trimmed += "。"
+    return normalize_text(trimmed)
 
 
 def normalize_text(text: str) -> str:
@@ -544,22 +563,46 @@ def trim_article(article: dict[str, object], max_chars: int = MAX_CHARS) -> dict
     if not isinstance(sections, list):
         return article
     while chinese_length(article_text(article)) > max_chars:
-        candidates: list[tuple[int, int, int]] = []
-        for si, sec in enumerate(sections[1:-1], start=1):
+        current_length = chinese_length(article_text(article))
+        overage = current_length - max_chars
+        candidates: list[tuple[int, int, int, int, str]] = []
+        intro = str(article.get("intro") or "")
+        if intro.strip():
+            candidates.append((2, len(intro), -1, -1, intro))
+        for si, sec in enumerate(sections):
             if not isinstance(sec, dict):
                 continue
             paragraphs = sec.get("paragraphs") or []
             if not isinstance(paragraphs, list):
                 continue
+            if si == 0:
+                priority = 1
+            elif si == len(sections) - 1:
+                priority = 3
+            else:
+                priority = 0
             for pi, para in enumerate(paragraphs):
-                candidates.append((len(str(para)), si, pi))
-        if not candidates:
+                para_text = str(para)
+                if para_text.strip():
+                    candidates.append((priority, len(para_text), si, pi, para_text))
+        candidates.sort(key=lambda item: (item[0], -item[1]))
+        chosen: tuple[int, int, int, int, str] | None = None
+        for priority, para_len, si, pi, para_text in candidates:
+            min_keep = 140 if si < 0 else (180 if priority != 2 else 140)
+            if para_len <= min_keep + 40:
+                continue
+            chosen = (priority, para_len, si, pi, para_text)
             break
-        _length, si, pi = max(candidates)
-        para = str(sections[si]["paragraphs"][pi])
-        if len(para) <= 260:
+        if chosen is None:
             break
-        sections[si]["paragraphs"][pi] = normalize_text(para[: max(260, len(para) - 180)].rstrip("，；、") + "。")
+        priority, para_len, si, pi, para = chosen
+        min_keep = 140 if si < 0 else (180 if priority != 2 else 140)
+        trim_by = min(max(40, overage + 20), para_len - min_keep)
+        target_len = para_len - trim_by
+        if si < 0:
+            article["intro"] = _trim_text_piece(para, target_len, min_len=min_keep)
+        else:
+            sections[si]["paragraphs"][pi] = _trim_text_piece(para, target_len, min_len=min_keep)
     return article
 
 
