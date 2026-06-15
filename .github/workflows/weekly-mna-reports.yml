@@ -123,7 +123,6 @@ jobs:
       REPORT_ALLOW_WEAK_SINGLE_CANDIDATE: ${{ github.event.inputs.allow_weak_single_candidate || '0' }}
       REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: ${{ github.event.inputs.min_external_research_items || '1' }}
       REPORT_EXPAND_ON_FAILURE: "0"
-      REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: "1"
       MNA_MAX_TITLE_URL_RESOLVES: "10"
       PYTHONUNBUFFERED: "1"
     steps:
