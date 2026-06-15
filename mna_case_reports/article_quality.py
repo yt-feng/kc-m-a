@@ -105,6 +105,14 @@ def _has_causal_analysis(text: str) -> bool:
     return any(token in text for token in ("原因在于", "这意味着", "其约束在于", "真正关键", "底层逻辑", "对应的是", "不是", "而是", "因此", "从而"))
 
 
+def _has_high_acceptance_contradiction(text: str) -> bool:
+    high_ratio_context = re.search(r"(?:预受|接受|受要约|要约)[\s\S]{0,180}(?:9\d(?:\.\d+)?%|100%|九成|超过九成|逾九成)", text)
+    if not high_ratio_context:
+        return False
+    contradiction_context = re.search(r"(?:预受率|接受率|接受|预受|受要约)[\s\S]{0,260}(?:严重不足|明显不足|远低于|不被市场接受|接受不足)", text)
+    return bool(contradiction_context)
+
+
 def _template_heading_count(headings: list[str]) -> int:
     count = 0
     for heading in headings:
@@ -200,6 +208,8 @@ def assess_quality(article: dict[str, object]) -> list[str]:
         issues.append("缺少产业层面的判断，需要结合标的所处行业、客户/产品/资源位置或竞争格局解释交易意义。")
     if not _has_causal_analysis(text):
         issues.append("文章缺少因果分析和判断句，需要解释为什么这些交易事实会影响估值、条款、交割或整合结果。")
+    if _has_high_acceptance_contradiction(text):
+        issues.append("正文存在数值逻辑矛盾：预受/接受比例已超过九成时，不得再写预受率严重不足、远低于预期或不被市场接受。")
 
     last_text = _last_section_text(article)
     if any(phrase in last_text for phrase in GENERIC_CONCLUSION_PHRASES):

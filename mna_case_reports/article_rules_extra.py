@@ -90,8 +90,9 @@ def _normalize_short_name_notes(text: str) -> str:
             return f"（下称“{short}”，股票代码：{ticker}）"
         return f"（下称“{short}”）"
 
-    text = re.sub(r"（下称“([^”]+)”）(?:（简称[^，）]*(?:，?股票代码[:：]?([A-Za-z0-9.]+))?）)", repl_combined, text)
-    text = re.sub(r"（简称([^，）]+)(?:，?股票代码[:：]?([A-Za-z0-9.]+))?）", repl_simple, text)
+    text = text.replace("（以下简称“", "（下称“")
+    text = re.sub(r"（下称“([^”]+)”）(?:（(?:简称|证券简称)[^，）]*(?:，?(?:股票代码|证券代码)[:：]?([A-Za-z0-9.]+))?）)", repl_combined, text)
+    text = re.sub(r"（(?:简称|证券简称)“?([^”，）]+)”?(?:，?(?:股票代码|证券代码)[:：]?([A-Za-z0-9.]+))?）", repl_simple, text)
     return text
 
 
@@ -234,9 +235,9 @@ def _drop_resolved_base_issues(issues: list[str], article: dict[str, object]) ->
 
 
 def _has_malformed_party_annotation(text: str) -> bool:
-    if "下文简称" in text:
+    if "下文简称" in text or "以下简称" in text:
         return True
-    if "（简称" in text:
+    if "（简称" in text or "（证券简称" in text:
         return True
     if BAD_SPLIT_NOTE_PATTERN.search(text):
         return True
