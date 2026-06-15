@@ -1,0 +1,22 @@
+[
+  {
+    "case_name": "Google收购Wiz",
+    "category": "跨境并购",
+    "region": "全球",
+    "source_title": "Google Cloud完成收购Wiz",
+    "source_url": "https://cloud.google.com/blog/products/identity-security/google-completes-acquisition-of-wiz",
+    "published_at": "",
+    "why": "2026年完成的大型科技并购，交易金额大，适合分析云安全产业整合、现金收购的风险分配、反垄断审查和团队留存。",
+    "is_domestic": false,
+    "is_classic": false,
+    "completed_year": "2026",
+    "is_completed": true,
+    "acquirer": "Google LLC",
+    "target": "Wiz, Inc.",
+    "deal_value": "320亿美元现金交易",
+    "deal_status": "2026年3月11日完成收购",
+    "buyer_motivation": "Google Cloud通过收购Wiz补强云安全平台能力，把多云安全、身份、数据和运行时防护能力纳入Google Cloud安全产品组合。",
+    "seller_motivation": "Wiz借助Google Cloud的全球客户覆盖、基础设施和安全产品体系扩大企业级部署，并在Google Cloud内保持对多云环境的服务定位。",
+    "financial_highlights": "公开交易信息显示交易对价约320亿美元现金；Wiz服务大型企业客户，Google Cloud将其作为云安全产品组合的重要补强。"
+  }
+]
