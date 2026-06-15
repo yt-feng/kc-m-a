@@ -37,6 +37,16 @@ SELLER_ARRANGEMENT_HINTS = (
     "股东账户", "清算过户", "完成过户", "控制权变更", "现金要约", "减持", "协议转让",
     "seller", "shareholder", "tendered", "accepted",
 )
+PER_SHARE_PRICE_RE = re.compile(
+    r"(?:要约收购价格|要约价格|收购价格|每股转让价格|每股价格|转让价格|价格为|以)"
+    r"(?:为人民币|为|：|:|人民币)?\s*(\d{1,3}(?:\.\d{1,4})?)\s*(元/股|港元/股|美元/股)",
+    re.I,
+)
+GENERAL_PER_SHARE_PRICE_RE = re.compile(r"(\d{1,3}(?:\.\d{1,4})?)\s*(元/股|港元/股|美元/股)", re.I)
+SHARE_COUNT_RE = re.compile(
+    r"(?:要约收购股份数量为|预定收购的股份数量|预定收购股份数量|拟协议受让|拟受让|受让其持有的|股份数量为)"
+    r"[^，。；:\n]{0,80}?(\d{1,3}(?:,\d{3})+|\d{6,})\s*股",
+)
 
 
 @dataclass
@@ -166,13 +176,81 @@ def _has_transaction_quantity(sentence: str) -> bool:
     )
 
 
+def _extract_per_share_prices(text: str) -> list[str]:
+    normalized = normalize_text(_compact_text(text))
+    out: list[str] = []
+    seen: set[str] = set()
+    matches = list(PER_SHARE_PRICE_RE.finditer(normalized)) or list(GENERAL_PER_SHARE_PRICE_RE.finditer(normalized))
+    for match in matches:
+        price = f"{match.group(1)}{match.group(2)}"
+        if price in seen:
+            continue
+        seen.add(price)
+        out.append(price)
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _extract_share_counts(text: str) -> list[str]:
+    normalized = normalize_text(_compact_text(text))
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in SHARE_COUNT_RE.finditer(normalized):
+        count = match.group(1)
+        if count in seen:
+            continue
+        seen.add(count)
+        out.append(count)
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _parse_number(value: str) -> float:
+    return float(str(value).replace(",", ""))
+
+
+def _deal_value_with_verified_price(value: str, research_rows: list[dict[str, str]]) -> str:
+    blob = _research_blob(research_rows, max_chars=60000)
+    prices = _extract_per_share_prices(blob)
+    if not prices:
+        return normalize_text(_compact_text(value))
+
+    result = normalize_text(_compact_text(value))
+    verified_price = prices[0]
+    if GENERAL_PER_SHARE_PRICE_RE.search(result):
+        result = re.sub(
+            r"\d{1,4}(?:\.\d+)?\s*(?:元/股|港元/股|美元/股)\d?(?=[，、。；\s]|$)",
+            verified_price,
+            result,
+            count=1,
+            flags=re.I,
+        )
+    else:
+        result = _compact_text(f"{result}；披露的每股价格为{verified_price}") if result else f"披露的每股价格为{verified_price}"
+
+    share_counts = _extract_share_counts(blob)
+    if share_counts:
+        try:
+            price_number = _parse_number(re.match(r"(\d{1,3}(?:\.\d{1,4})?)", verified_price).group(1))  # type: ignore[union-attr]
+            share_number = _parse_number(share_counts[0])
+            amount = int(round(price_number * share_number))
+            amount_text = f"{amount:,}元"
+            if amount_text not in result:
+                result = _compact_text(f"{result}；按{share_counts[0]}股和{verified_price}测算，金额上限约{amount_text}")
+        except Exception:  # noqa: BLE001
+            pass
+    return normalize_text(result)
+
+
 def _fallback_deal_value(current: str, facts: list[str], research_rows: list[dict[str, str]]) -> str:
     noisy_current = any(token in _compact_text(current) for token in ("释义", "本报告书", "信息披露义务人", "以下简称", "下列简称"))
     if not _is_missing_fact(current) and not noisy_current and _has_transaction_quantity(current):
-        return normalize_text(_compact_text(current))
+        return _deal_value_with_verified_price(current, research_rows)
     sentences = _candidate_sentences(_research_blob(research_rows)) + facts
     value_sentences = [sentence for sentence in sentences if _has_transaction_quantity(sentence)]
-    return normalize_text(_best_sentence(value_sentences, DEAL_VALUE_HINTS))
+    return _deal_value_with_verified_price(_best_sentence(value_sentences, DEAL_VALUE_HINTS), research_rows)
 
 
 def _fallback_buyer_rationale(current: str, brief: CaseBrief, facts: list[str], research_rows: list[dict[str, str]]) -> str:

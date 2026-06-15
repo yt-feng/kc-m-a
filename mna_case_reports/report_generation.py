@@ -287,6 +287,8 @@ def _replace_article_text_fields(article: dict[str, object], replace_fn: Any) ->
 def repair_article_against_fact_pack(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> dict[str, object]:
     fact_text = json.dumps(fact_pack.to_dict(), ensure_ascii=False)
     percentages = re.findall(r"\d{1,3}(?:\.\d+)?%", fact_text)
+    per_share_prices = re.findall(r"\d{1,3}(?:\.\d{1,4})?(?:元/股|港元/股|美元/股)", fact_text)
+    amount_limits = re.findall(r"金额上限约(\d{1,3}(?:,\d{3})+元)", fact_text)
 
     def replace_placeholder(match: re.Match[str]) -> str:
         prefix = match.group(1)
@@ -297,6 +299,14 @@ def repair_article_against_fact_pack(article: dict[str, object], brief: CaseBrie
 
     def replace_text(text: str) -> str:
         text = re.sub(r"(\d{1,3})\.x+%", replace_placeholder, text, flags=re.I)
+        if per_share_prices:
+            verified_price = per_share_prices[0]
+            price_number_match = re.match(r"(\d{1,3}(?:\.\d{1,4})?)", verified_price)
+            text = re.sub(r"\d{1,4}(?:\.\d+)?(?:元/股|港元/股|美元/股)", verified_price, text, count=1)
+            if price_number_match:
+                text = re.sub(r"每股\d{1,4}(?:\.\d+)?元", f"每股{price_number_match.group(1)}元", text, count=1)
+        if amount_limits:
+            text = re.sub(r"总金额约?\d{1,3}(?:,\d{3})+元", f"总金额上限约{amount_limits[0]}", text, count=1)
         return text
 
     article = _replace_article_text_fields(article, replace_text)
