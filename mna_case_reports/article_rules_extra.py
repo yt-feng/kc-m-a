@@ -32,9 +32,19 @@ extract_research_fact_lines = base.extract_research_fact_lines
 
 COMPANY_SUFFIX = r"(?:股份有限公司|有限责任公司|科技有限公司|娱乐集团|有限公司|公司)"
 LEGAL_NAME_TAIL = r"(?:科技有限公司|股份有限公司|有限责任公司|娱乐集团|有限公司|集团|公司)"
-BAD_SPLIT_NOTE_PATTERN = re.compile(rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”(?:，[^）]+)?）(?!收购|并购|购买|出售|转让|受让|入股|控股|合并)([{CJK}A-Za-z0-9·&]{{0,12}}{LEGAL_NAME_TAIL})")
+BAD_SPLIT_NOTE_PATTERN = re.compile(
+    rf"([{CJK}A-Za-z0-9·&]+)（下称“([^”]+)”(?:，[^）]+)?）"
+    rf"(?!收购|并购|购买|出售|转让|受让|入股|控股|合并|与|和|及|、|，|,)"
+    rf"([{CJK}A-Za-z0-9·&]{{0,12}}{LEGAL_NAME_TAIL})"
+)
 DUP_NOTE_PATTERN = re.compile(r"(?P<note>（下称“[^”]+”(?:，[^）]+)?）)(?P=note)+")
 ANY_COMPANY_NOTE_PATTERN = re.compile(r"（下称“[^”]+”(?:，[^）]+)?）")
+GENERIC_DESCRIPTOR_NOTE_PATTERN = re.compile(
+    r"(?P<desc>特殊目的收购公司|SPAC公司|空白支票公司|目标公司|标的公司|收购方|并购方|买方|卖方|"
+    r"移动数据分析公司|数据分析公司|上市公司|公司|企业)"
+    r"（下称“[^”]+”(?:，[^）]+)?）"
+    r"(?=\s*[A-Z][A-Za-z0-9 .,&-]{2,80}(?:Corp\.?|Corporation|Inc\.?|Ltd\.?|Limited|Group|Holdings?|Co\.?))"
+)
 PLACEHOLDER_FACT_PATTERN = re.compile(r"(?i)(?:\d+(?:\.\d+)?\.x+%|x{2,}%?|待补充|待确认|占位|TODO|TBD)")
 KNOWN_COMPANY_NOTES = {
     "腾讯音乐娱乐集团": "腾讯音乐娱乐集团（下称“腾讯音乐”，NYSE：TME）",
@@ -96,6 +106,10 @@ def _normalize_short_name_notes(text: str) -> str:
     return text
 
 
+def _strip_generic_descriptor_notes(text: str) -> str:
+    return GENERIC_DESCRIPTOR_NOTE_PATTERN.sub(lambda m: m.group("desc"), text)
+
+
 def _strip_all_notes_after_company(text: str, full_name: str) -> str:
     """Remove one or more immediate short-name notes after a legal name."""
     escaped = re.escape(full_name)
@@ -149,6 +163,7 @@ def strip_company_notes(text: str) -> str:
     text = convert_halfwidth_quotes(str(text or ""))
     text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
     text = _normalize_short_name_notes(text)
+    text = _strip_generic_descriptor_notes(text)
     text = _repair_split_notes(text)
     text = ANY_COMPANY_NOTE_PATTERN.sub("", text)
     return base.normalize_text(text)
@@ -167,6 +182,7 @@ def repair_party_annotation_text(text: str, *, add_known_notes: bool = True) -> 
     text = convert_halfwidth_quotes(str(text or ""))
     text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
     text = _normalize_short_name_notes(text)
+    text = _strip_generic_descriptor_notes(text)
     text = _repair_split_notes(text)
     text = _apply_known_company_notes(text, add_known_notes=add_known_notes)
     return base.normalize_text(text)
@@ -176,6 +192,7 @@ def repair_party_annotation_text_once(text: str, seen_notes: set[str]) -> str:
     text = convert_halfwidth_quotes(str(text or ""))
     text = normalize_ticker_punctuation(text).replace("（下文简称“", "（下称“")
     text = _normalize_short_name_notes(text)
+    text = _strip_generic_descriptor_notes(text)
     text = _repair_split_notes(text)
     text = _apply_known_company_notes_once(text, seen_notes)
     return base.normalize_text(text)
@@ -214,6 +231,8 @@ def _normalize_text_fields(article: dict[str, object]) -> None:
 def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[str, object]:
     article = base.postprocess_article(article, brief)
     _walk_text_fields(article)
+    base.annotate_party_first_mentions(article, brief)
+    _walk_text_fields(article)
     _normalize_text_fields(article)
     return article
 
@@ -235,6 +254,8 @@ def _drop_resolved_base_issues(issues: list[str], article: dict[str, object]) ->
 
 
 def _has_malformed_party_annotation(text: str) -> bool:
+    if GENERIC_DESCRIPTOR_NOTE_PATTERN.search(text):
+        return True
     if "下文简称" in text or "以下简称" in text:
         return True
     if "（简称" in text or "（证券简称" in text:
