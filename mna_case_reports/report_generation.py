@@ -160,6 +160,10 @@ def external_evidence_count(research_rows: list[dict[str, str]]) -> int:
     return sum(1 for row in research_rows if (row.get("evidence_type") or "") != "structured_seed")
 
 
+def _allow_fact_pack_smoke_test() -> bool:
+    return os.getenv("REPORT_ALLOW_FACT_PACK_VALIDATION_FAILURE", "0") == "1"
+
+
 def enforce_hard_length(article: dict[str, object], brief: CaseBrief, *, stage: str) -> dict[str, object]:
     article = postprocess_article(article, brief)
     length = chinese_length(article_text(article))
@@ -466,7 +470,9 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
     fact_pack = build_fact_pack(brief, research_rows)
     if fact_pack.validation_issues:
         action_notice(f"report_stage case={brief.case_name} stage=fact_pack_failed issues={fact_pack.validation_issues}")
-        raise RuntimeError(f"Fact pack validation failed for {brief.case_name}: {fact_pack.validation_issues}")
+        if not _allow_fact_pack_smoke_test():
+            raise RuntimeError(f"Fact pack validation failed for {brief.case_name}: {fact_pack.validation_issues}")
+        LOGGER.warning("Proceeding with weak fact pack because smoke-test override is enabled: %s issues=%s", brief.case_name, fact_pack.validation_issues)
     action_notice(f"report_stage case={brief.case_name} stage=fact_pack_done deal_value={fact_pack.deal_value[:120]}")
     action_notice(f"report_stage case={brief.case_name} stage=narrative_plan_start")
     narrative_plan = build_narrative_plan(brief, fact_pack, research_rows)
