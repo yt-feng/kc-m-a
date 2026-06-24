@@ -1,0 +1,22 @@
+{
+  "count": 2,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260624_130333_同一控制下国资整合：浦东资本以非货币实缴受让上工申贝6%股份的结构设计.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260624_130333_浦东资本受让上海汇丽建材股份有限公司3.84%股权：国资作价出资与隐性控制权的合规重构.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    }
+  ]
+}
