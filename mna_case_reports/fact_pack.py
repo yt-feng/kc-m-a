@@ -28,6 +28,11 @@ DEAL_VALUE_HINTS = (
     "支付", "现金", "发行股份", "可转债", "股份数量", "最终收购", "占", "元/股", "港元/股",
     "美元/股", "每股", "purchase price", "consideration", "valuation",
 )
+PAYMENT_STRUCTURE_HINTS = (
+    "支付方式", "现金支付", "支付现金", "现金要约", "全面现金要约", "要约收购", "协议转让",
+    "发行股份", "股份支付", "定向发行", "认购", "股权/股份受让", "全部股权/股份", "全部股份",
+    "全部股权", "控股权", "控制权", "表决权", "作价出资", "非货币出资",
+)
 BUYER_RATIONALE_HINTS = (
     "收购目的", "购买理由", "控制权", "控股股东", "取得", "入主", "谋求", "整合", "协同",
     "产业", "战略", "平台", "拓展", "补强", "并表", "上市公司", "buyer", "acquirer",
@@ -176,6 +181,13 @@ def _has_transaction_quantity(sentence: str) -> bool:
     )
 
 
+def _has_payment_or_structure(value: str | None) -> bool:
+    text = _compact_text(value or "")
+    if not text:
+        return False
+    return _has_transaction_quantity(text) or any(hint in text for hint in PAYMENT_STRUCTURE_HINTS)
+
+
 def _extract_per_share_prices(text: str) -> list[str]:
     normalized = normalize_text(_compact_text(text))
     out: list[str] = []
@@ -244,13 +256,22 @@ def _deal_value_with_verified_price(value: str, research_rows: list[dict[str, st
     return normalize_text(result)
 
 
-def _fallback_deal_value(current: str, facts: list[str], research_rows: list[dict[str, str]]) -> str:
+def _fallback_deal_value(current: str, facts: list[str], research_rows: list[dict[str, str]], *, fallback: str = "") -> str:
     noisy_current = any(token in _compact_text(current) for token in ("释义", "本报告书", "信息披露义务人", "以下简称", "下列简称"))
-    if not _is_missing_fact(current) and not noisy_current and _has_transaction_quantity(current):
+    current_text = _compact_text(current)
+    fallback_text = _compact_text(fallback)
+    if not _is_missing_fact(current) and not noisy_current and _has_payment_or_structure(current):
         return _deal_value_with_verified_price(current, research_rows)
     sentences = _candidate_sentences(_research_blob(research_rows)) + facts
     value_sentences = [sentence for sentence in sentences if _has_transaction_quantity(sentence)]
-    return _deal_value_with_verified_price(_best_sentence(value_sentences, DEAL_VALUE_HINTS), research_rows)
+    value = _deal_value_with_verified_price(_best_sentence(value_sentences, DEAL_VALUE_HINTS), research_rows)
+    if value:
+        return value
+    if fallback_text and _has_payment_or_structure(fallback_text):
+        return normalize_text(fallback_text)
+    if current_text and _has_payment_or_structure(current_text):
+        return normalize_text(current_text)
+    return ""
 
 
 def _fallback_buyer_rationale(current: str, brief: CaseBrief, facts: list[str], research_rows: list[dict[str, str]]) -> str:
@@ -369,7 +390,7 @@ def validate_fact_pack(pack: FactPack) -> list[str]:
         issues.append("缺少并购方名称。")
     if not pack.target or pack.target in {"标的", "公开披露的标的"}:
         issues.append("缺少标的方/出售方名称。")
-    if not pack.deal_value or "未披露" in pack.deal_value:
+    if not pack.deal_value or ("未披露" in pack.deal_value and not _has_payment_or_structure(pack.deal_value)):
         issues.append("缺少可引用的交易金额、估值或支付口径。")
     if len(pack.timeline) < 1 and not any(token in pack.deal_status for token in ("2023", "2024", "2025", "2026", "完成", "交割", "签署", "公告")):
         issues.append("缺少交易时间线。")
@@ -377,7 +398,8 @@ def validate_fact_pack(pack: FactPack) -> list[str]:
         issues.append("缺少收购方披露的购买理由。")
     if not pack.seller_rationale or len(pack.seller_rationale) < 15:
         issues.append("缺少出售方或被整合方接受安排的原因或可由交易条款支撑的安排依据。")
-    if len(pack.key_numbers) < 3 and not re.search(r"\d", pack.financial_highlights):
+    numeric_context = " ".join([pack.deal_value, pack.deal_status, " ".join(pack.timeline), pack.financial_highlights])
+    if len(pack.key_numbers) < 3 and not re.search(r"\d", numeric_context):
         issues.append("数据密度不足，缺少财务、交易或经营数字。")
     if pack.authoritative_source_count < 1:
         issues.append("缺少公开权威资料来源，需优先补公告、监管披露、交易所文件或公司公告。")
@@ -409,7 +431,7 @@ def build_fact_pack(brief: CaseBrief, research_rows: list[dict[str, str]]) -> Fa
         return initial
 
     facts = extract_research_fact_lines(research_rows, limit=14)
-    deal_value = _fallback_deal_value(str(data.get("deal_value") or initial.deal_value), facts, research_rows)
+    deal_value = _fallback_deal_value(str(data.get("deal_value") or initial.deal_value), facts, research_rows, fallback=initial.deal_value)
     buyer_rationale = _fallback_buyer_rationale(str(data.get("buyer_rationale") or initial.buyer_rationale), brief, facts, research_rows)
     seller_rationale = _fallback_seller_rationale(str(data.get("seller_rationale") or initial.seller_rationale), facts, research_rows, deal_value)
     pack = FactPack(

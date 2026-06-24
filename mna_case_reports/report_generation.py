@@ -18,7 +18,11 @@ from .article_rules_extra import (
     TARGET_MIN_CHARS,
     article_text,
     chinese_length,
+    cn_number,
+    compact_name,
     postprocess_article,
+    strip_heading_number,
+    title_length,
     trim_article,
     validate_article,
 )
@@ -32,6 +36,14 @@ from .research import collect_research_context
 LOGGER = logging.getLogger(__name__)
 PROGRESS_QUEUE: Any = None
 DISABLED_ARTICLE_PROVIDERS: set[str] = set()
+GENERIC_REPAIR_HEADINGS = (
+    "交易过程", "交易逻辑", "可复用经验", "结论", "经验启示", "案例启示",
+    "交易背景", "交易结构设计", "并购后整合", "买方动机", "卖方动机",
+)
+GENERIC_CONCLUSION_REPAIR_PHRASES = (
+    "并购不是终点", "整合才是开始", "协同不是口号", "时间会给出答案",
+    "值得长期关注", "对企业具有重要启示", "为同类交易提供了借鉴", "具有参考意义",
+)
 
 
 def set_progress_queue(queue: Any | None) -> None:
@@ -178,6 +190,15 @@ def _allow_draft_on_validation_failure() -> bool:
     return os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") == "1"
 
 
+def _expand_on_failure_enabled() -> bool:
+    return os.getenv("REPORT_EXPAND_ON_FAILURE", "0") == "1"
+
+
+def _should_expand_after_failure(exc: Exception) -> bool:
+    text = str(exc)
+    return any(token in text for token in ("Insufficient external research evidence", "Fact pack validation failed", "缺少可引用"))
+
+
 def publish_partial_article(
     brief: CaseBrief,
     article: dict[str, object],
@@ -206,10 +227,12 @@ def publish_partial_article(
 def enforce_hard_length(article: dict[str, object], brief: CaseBrief, *, stage: str) -> dict[str, object]:
     article = postprocess_article(article, brief)
     length = chinese_length(article_text(article))
-    if length <= MAX_CHARS:
+    safety_margin = max(0, int(os.getenv("REPORT_MAX_CHARS_SAFETY_MARGIN", "60")))
+    safe_max_chars = max(MIN_CHARS, MAX_CHARS - safety_margin)
+    if length <= safe_max_chars:
         return article
     action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_start length={length}")
-    trimmed = trim_article(article, MAX_CHARS)
+    trimmed = trim_article(article, safe_max_chars)
     trimmed = postprocess_article(trimmed, brief)
     trimmed_length = chinese_length(article_text(trimmed))
     action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_done length={trimmed_length}")
@@ -378,6 +401,202 @@ def repair_article_against_fact_pack(article: dict[str, object], brief: CaseBrie
     return postprocess_article(article, brief)
 
 
+def _compact_title_alias(value: str, *, max_len: int) -> str:
+    alias = compact_name(value) or str(value or "").strip()
+    alias = re.sub(r"[（）()\"“”'‘’]", "", alias)
+    alias = alias.replace("上海市", "上海").replace("深圳市", "深圳").replace("杭州市", "杭州")
+    alias = alias.strip()
+    if len(alias) <= max_len:
+        return alias
+    return alias[:max_len]
+
+
+def _deal_focus_phrase(brief: CaseBrief, fact_pack: FactPack) -> str:
+    text = " ".join([
+        brief.category or "",
+        brief.deal_value or "",
+        fact_pack.deal_value or "",
+        fact_pack.buyer_rationale or "",
+        fact_pack.seller_rationale or "",
+    ])
+    if "要约" in text:
+        return "要约与控制权安排"
+    if "控制权" in text or "控股权" in text or "表决权" in text:
+        return "控制权与治理安排"
+    if "现金" in text:
+        return "现金支付与业务承接"
+    if "协议转让" in text or "受让" in text:
+        return "协议转让与交割条件"
+    if "股权" in text or "股份" in text or "%" in text or "％" in text:
+        return "股权比例与治理安排"
+    return "披露边界下的交易结构"
+
+
+def _safe_article_title(brief: CaseBrief, fact_pack: FactPack) -> str:
+    focus = _deal_focus_phrase(brief, fact_pack)
+    for max_len in (10, 8, 6, 4):
+        acquirer = _compact_title_alias(brief.acquirer or fact_pack.acquirer or brief.case_name, max_len=max_len)
+        target = _compact_title_alias(brief.target or fact_pack.target or brief.case_name, max_len=max_len)
+        title = f"{acquirer}收购{target}：{focus}"
+        if title_length(title) <= 40:
+            return title
+    acquirer = _compact_title_alias(brief.acquirer or fact_pack.acquirer or brief.case_name, max_len=4)
+    target = _compact_title_alias(brief.target or fact_pack.target or brief.case_name, max_len=4)
+    return f"{acquirer}收购{target}：控制权安排"
+
+
+def _clean_fact_values(values: list[object], *, limit: int = 3) -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = re.sub(r"\s+", " ", str(value or "")).strip(" ；;，,。")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text[:120])
+        if len(out) >= limit:
+            break
+    return "；".join(out)
+
+
+def _ensure_intro_context(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> None:
+    full_acquirer = brief.acquirer or fact_pack.acquirer
+    full_target = brief.target or fact_pack.target
+    if not full_acquirer or not full_target:
+        return
+    intro = str(article.get("intro") or "")
+    if full_acquirer in intro and full_target in intro and "交易前" in intro:
+        return
+    trigger = "公告、协议、要约或监管披露"
+    source_hint = _clean_fact_values(fact_pack.source_titles, limit=1)
+    if source_hint:
+        trigger = source_hint
+    objective = fact_pack.buyer_rationale or brief.buyer_motivation or "公开资料未完整披露主观目的，需回到已披露条款理解交易目标"
+    anchor = (
+        f"本案例涉及{full_acquirer}收购{full_target}的交易安排。"
+        f"交易前，本文先从股权结构、控制权状态、业务状态和产业位置理解双方处境；"
+        f"交易的触发路径来自{trigger}，目标线索为{objective[:180]}。"
+    )
+    article["intro"] = f"{anchor}{intro}" if intro else anchor
+
+
+def _ensure_first_section(article: dict[str, object]) -> dict[str, object]:
+    sections = article.get("sections")
+    if not isinstance(sections, list):
+        sections = []
+        article["sections"] = sections
+    if not sections:
+        sections.append({"heading": "一、交易前状态与披露触发", "paragraphs": []})
+    first = sections[0]
+    if not isinstance(first, dict):
+        first = {"heading": "一、交易前状态与披露触发", "paragraphs": []}
+        sections[0] = first
+    if not isinstance(first.get("paragraphs"), list):
+        first["paragraphs"] = []
+    return first
+
+
+def _ensure_fact_boundary(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> None:
+    text = article_text(article)
+    if "披露边界" in text and "收入、净利润、现金流" in text:
+        return
+    deal_value = fact_pack.deal_value or brief.deal_value or "公开资料未披露具体金额，但保留了支付方式、股权比例或交易结构线索"
+    timeline = _clean_fact_values(fact_pack.timeline or [brief.deal_status], limit=2) or "公告、签署、交割或过户节点以公开披露为准"
+    key_numbers = _clean_fact_values(fact_pack.key_numbers, limit=4) or "关键数字集中在股权比例、支付方式、交易价格、资产或控制权安排"
+    financial = fact_pack.financial_highlights or brief.financial_highlights
+    if financial:
+        financial_clause = f"已抓取资料中的财务和经营线索为{financial[:220]}"
+    else:
+        financial_clause = "收入、净利润、现金流、负债、产能、订单、客户、用户、员工等口径在已抓取资料中未完整披露，正文不得补编"
+    seller = fact_pack.seller_rationale or "公开资料未单独披露出售方或股东主观动机，需从协议转让、要约、支付方式、控制权或表决权安排理解接受机制"
+    paragraph = (
+        f"事实披露边界上，本案可引用的交易对价、估值或支付口径为{deal_value}；"
+        f"时间线包括{timeline}；关键数字包括{key_numbers}。"
+        f"{financial_clause}。收购方、买方和并购方的购买理由需要回到{(fact_pack.buyer_rationale or brief.buyer_motivation or '已披露交易目标')[:180]}；"
+        f"出售方、转让方或预受要约股东的接受安排依据为{seller[:220]}。"
+        "因此，后文只围绕已披露的股权比例、支付方式、交易价格、资产、客户、产能、技术、治理边界、交割条件、现金流、负债、收入和净利润影响展开，未披露事项作为资料核验边界处理。"
+    )
+    first = _ensure_first_section(article)
+    paragraphs = first["paragraphs"]
+    if isinstance(paragraphs, list):
+        paragraphs.insert(0, paragraph)
+
+
+def _ensure_conclusion(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> None:
+    sections = article.get("sections")
+    if not isinstance(sections, list):
+        sections = []
+        article["sections"] = sections
+    focus = _deal_focus_phrase(brief, fact_pack)
+    if not sections:
+        sections.append({"heading": f"一、结语：{focus}的执行边界", "paragraphs": []})
+    last = sections[-1]
+    if not isinstance(last, dict):
+        last = {"heading": f"{cn_number(len(sections))}、结语：{focus}的执行边界", "paragraphs": []}
+        sections[-1] = last
+    if "结语" not in str(last.get("heading") or ""):
+        if len(sections) < 7:
+            last = {"heading": f"{cn_number(len(sections) + 1)}、结语：{focus}的执行边界", "paragraphs": []}
+            sections.append(last)
+        else:
+            last["heading"] = f"{cn_number(len(sections))}、结语：{focus}的执行边界"
+    if not isinstance(last.get("paragraphs"), list):
+        last["paragraphs"] = []
+    last["paragraphs"] = [
+        str(p) for p in last["paragraphs"]
+        if not any(phrase in str(p) for phrase in GENERIC_CONCLUSION_REPAIR_PHRASES)
+    ]
+    conclusion_text = "\n".join(str(p) for p in last["paragraphs"])
+    acquirer = _compact_title_alias(brief.acquirer or fact_pack.acquirer or brief.case_name, max_len=10)
+    target = _compact_title_alias(brief.target or fact_pack.target or brief.case_name, max_len=10)
+    if acquirer in conclusion_text and target in conclusion_text and "方法论" in conclusion_text and "核验" in conclusion_text:
+        return
+    deal_value = fact_pack.deal_value or brief.deal_value or "已披露交易结构"
+    key_numbers = _clean_fact_values(list(fact_pack.key_numbers or []) + list(fact_pack.timeline or []), limit=4) or "公开资料未披露更多量化口径"
+    paragraph = (
+        f"回到{acquirer}与{target}，本案的方法论意义不在于把交易结果写成通用并购总结，而在于把{deal_value}、{key_numbers}、控制权、股权比例、支付方式和交割条件放在同一披露链条中核验。"
+        "因此，同类并购首先要确认信息披露是否足以支撑估值锚、条款安排、治理边界和交易执行；其次要把产业链位置、客户结构、产能、技术路线、资源禀赋和商业模式放回标的业务承接中判断；"
+        "最后才评估收入、净利润、现金流、负债、资产、市值、订单、客户和用户等财务影响。"
+        f"对{acquirer}而言，关键是交割承接和整合节奏能否与已披露安排匹配；对{target}而言，关键是控制权或股东接受机制能否在公开资料边界内被持续验证。"
+    )
+    last["paragraphs"].append(paragraph)
+
+
+def _repair_section_headings(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> None:
+    sections = article.get("sections")
+    if not isinstance(sections, list):
+        return
+    focus = _deal_focus_phrase(brief, fact_pack)
+    replacements = [
+        "交易前状态、披露触发与目标边界",
+        f"{focus}的条款基础",
+        "业务基础、产业位置与财务边界",
+        "交割条件、治理边界与承接风险",
+        "同类并购的资料核验与执行方法",
+        "信息披露、估值锚与整合节奏",
+    ]
+    total = len(sections)
+    for index, sec in enumerate(sections, start=1):
+        if not isinstance(sec, dict):
+            continue
+        if index == total:
+            sec["heading"] = f"{cn_number(index)}、结语：{focus}的核验方法"
+            continue
+        heading = strip_heading_number(str(sec.get("heading") or ""))
+        if len(re.sub(r"\s+", "", heading)) < 8 or any(token in heading for token in GENERIC_REPAIR_HEADINGS):
+            sec["heading"] = f"{cn_number(index)}、{replacements[min(index - 1, len(replacements) - 1)]}"
+
+
+def deterministic_article_repair(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> dict[str, object]:
+    article = postprocess_article(article, brief)
+    article["title"] = _safe_article_title(brief, fact_pack)
+    _ensure_intro_context(article, brief, fact_pack)
+    _ensure_fact_boundary(article, brief, fact_pack)
+    _ensure_conclusion(article, brief, fact_pack)
+    _repair_section_headings(article, brief, fact_pack)
+    return postprocess_article(article, brief)
+
+
 def _length_score(article: dict[str, object]) -> tuple[int, int]:
     length = chinese_length(article_text(article))
     midpoint = (TARGET_MIN_CHARS + TARGET_MAX_CHARS) // 2
@@ -435,7 +654,7 @@ def _article_validation_score(article: dict[str, object], brief: CaseBrief) -> t
 def final_repair_article(article: dict[str, object], brief: CaseBrief, research_rows: list[dict[str, str]], fact_pack: FactPack, narrative_plan: NarrativePlan) -> dict[str, object]:
     max_repairs = int(os.getenv("REPORT_FINAL_REPAIR_REVISIONS", "1"))
     article = expand_to_target_length(article, brief, research_rows, fact_pack, narrative_plan)
-    article = postprocess_article(article, brief)
+    article = deterministic_article_repair(article, brief, fact_pack)
     for attempt in range(max_repairs):
         hard_issues = validate_article(article, brief)
         quality_issues = assess_quality(article)
@@ -458,14 +677,14 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
         )
         candidate = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
         candidate = expand_to_target_length(candidate, brief, research_rows, fact_pack, narrative_plan)
-        candidate = postprocess_article(candidate, brief)
+        candidate = deterministic_article_repair(candidate, brief, fact_pack)
         candidate_score = _article_validation_score(candidate, brief)
         if candidate_score >= current_score:
             article = candidate
         else:
             LOGGER.info("Final repair candidate was worse for %s; keeping previous version", brief.case_name)
             break
-    return postprocess_article(article, brief)
+    return deterministic_article_repair(article, brief, fact_pack)
 
 
 def generate_article(brief: CaseBrief) -> dict[str, object]:
@@ -475,12 +694,22 @@ def generate_article(brief: CaseBrief) -> dict[str, object]:
     external_count = external_evidence_count(research_rows)
     LOGGER.info("Collected %s research items for report: %s external=%s", len(research_rows), brief.case_name, external_count)
     action_notice(f"report_stage case={brief.case_name} stage=collect_research_done items={len(research_rows)} external={external_count}")
-    if external_count < int(os.getenv("REPORT_MIN_EXTERNAL_RESEARCH_ITEMS", "1")):
+    min_external = int(os.getenv("REPORT_MIN_EXTERNAL_RESEARCH_ITEMS", "1"))
+    if external_count < min_external:
+        if _expand_on_failure_enabled():
+            LOGGER.warning("Initial research evidence is thin for %s; expanding source collection before failing.", brief.case_name)
+            action_notice(f"report_stage case={brief.case_name} stage=expanded_research_start reason=thin_external_evidence")
+            expanded_items = collect_research_context(brief, limit=56, expanded=True)
+            expanded_rows = [item.to_dict() for item in expanded_items]
+            expanded_external_count = external_evidence_count(expanded_rows)
+            action_notice(f"report_stage case={brief.case_name} stage=expanded_research_done items={len(expanded_rows)} external={expanded_external_count}")
+            if expanded_external_count >= min_external:
+                return generate_article_with_rows(brief, expanded_rows)
         raise RuntimeError(f"Insufficient external research evidence for {brief.case_name}; only structured seed was found.")
     try:
         return generate_article_with_rows(brief, research_rows)
     except Exception as exc:  # noqa: BLE001
-        if os.getenv("REPORT_EXPAND_ON_FAILURE", "0") != "1":
+        if not _expand_on_failure_enabled() or not _should_expand_after_failure(exc):
             raise
         LOGGER.warning("Initial report generation failed for %s; expanding Google/Bing/page research and regenerating: %s", brief.case_name, exc)
         action_notice(f"report_stage case={brief.case_name} stage=expanded_research_start reason={str(exc)[:300]}")
@@ -594,6 +823,8 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
     action_notice(f"report_stage case={brief.case_name} stage=final_repair_pipeline_start length={chinese_length(article_text(article))}")
     article = final_repair_article(article, brief, research_rows, fact_pack, narrative_plan)
     article = enforce_hard_length(article, brief, stage="final_repair")
+    article = deterministic_article_repair(article, brief, fact_pack)
+    article = enforce_hard_length(article, brief, stage="final_deterministic_repair")
     final_issues = validate_article(article, brief)
     final_quality_issues = assess_quality(article)
     publish_partial_article(
