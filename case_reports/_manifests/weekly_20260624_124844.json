@@ -1,0 +1,42 @@
+[
+  {
+    "case_name": "上海张江（集团）有限公司收购上海张江科学之门科技发展有限公司",
+    "category": "整合一级资产+资本化",
+    "region": "中国",
+    "source_title": "张江集团协议受让张江高科所持科学之门16.51%股权",
+    "source_url": "https://static.cninfo.com.cn/finalpage/2026-06-17/1225374544.PDF",
+    "published_at": "2026-06-17",
+    "why": "张江集团协议受让张江高科所持科学之门16.51%股权；关联交易",
+    "is_domestic": true,
+    "is_classic": false,
+    "completed_year": "2026",
+    "is_completed": false,
+    "acquirer": "上海张江（集团）有限公司",
+    "target": "上海张江科学之门科技发展有限公司",
+    "deal_value": "",
+    "deal_status": "2026-06-17；进行中",
+    "buyer_motivation": "张江集团协议受让张江高科所持科学之门16.51%股权；关联交易",
+    "seller_motivation": "关联交易",
+    "financial_highlights": "张江集团协议受让张江高科所持科学之门16.51%股权；关联交易"
+  },
+  {
+    "case_name": "安阳钢铁集团有限责任公司收购安阳钢铁股份有限公司",
+    "category": "上市公司控股权并购",
+    "region": "中国",
+    "source_title": "安阳钢铁集团披露收购报告书摘要，可能涉及对安阳钢铁的控股股权收购。",
+    "source_url": "https://static.cninfo.com.cn/finalpage/2026-06-24/1225384004.PDF",
+    "published_at": "2026-06-24",
+    "why": "安阳钢铁集团披露收购报告书摘要，可能涉及对安阳钢铁的控股股权收购。；收购报告书摘要已披露",
+    "is_domestic": true,
+    "is_classic": false,
+    "completed_year": "2026",
+    "is_completed": false,
+    "acquirer": "安阳钢铁集团有限责任公司",
+    "target": "安阳钢铁股份有限公司",
+    "deal_value": "",
+    "deal_status": "2026-06-24；进行中",
+    "buyer_motivation": "安阳钢铁集团披露收购报告书摘要，可能涉及对安阳钢铁的控股股权收购。；收购报告书摘要已披露",
+    "seller_motivation": "收购报告书摘要已披露",
+    "financial_highlights": ""
+  }
+]
