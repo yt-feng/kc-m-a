@@ -1,9 +1,13 @@
 name: Weekly M&A case reports
+# manual trigger: 2026-06-13T20:25:00+08:00
 
 on:
   schedule:
     # 05:00 every Friday in Beijing = 21:00 every Thursday UTC.
     - cron: "0 21 * * 4"
+  push:
+    paths:
+      - ".github/workflows/weekly-mna-reports.yml"
   workflow_dispatch:
     inputs:
       mode:
