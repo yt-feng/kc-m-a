@@ -266,11 +266,9 @@ def main() -> None:
     max_attempts = max_generation_attempts(args.count)
     candidate_timeout_seconds = per_candidate_timeout_seconds()
     allow_weak_single_candidate = args.count == 1 and os.getenv("REPORT_ALLOW_WEAK_SINGLE_CANDIDATE", "0") == "1"
-    allow_weak_fallback = args.mode == "weekly" and env_flag("REPORT_ALLOW_WEAK_FALLBACK", default=True)
     action_notice(
         f"report_run_start mode={args.mode} count={args.count} min_domestic={args.min_domestic} "
-        f"pool_count={pool_count} max_attempts={max_attempts} candidate_timeout_s={candidate_timeout_seconds} "
-        f"weak_fallback={allow_weak_fallback}"
+        f"pool_count={pool_count} max_attempts={max_attempts} candidate_timeout_s={candidate_timeout_seconds}"
     )
 
     if args.mode == "backfill":
@@ -366,9 +364,6 @@ def main() -> None:
             if allow_weak_single_candidate:
                 LOGGER.info("Proceeding with weak single-report candidate because smoke-test override is enabled: %s [%s]", brief.case_name, brief.category)
                 action_notice(f"candidate_weak_override attempt={attempted} case={brief.case_name}")
-            elif allow_weak_fallback and has_usable_source_url(brief.source_url):
-                LOGGER.info("Proceeding with sourced weak weekly candidate after ready candidates were exhausted: %s [%s]", brief.case_name, brief.category)
-                action_notice(f"candidate_weak_fallback attempt={attempted} case={brief.case_name}")
             else:
                 LOGGER.info("Skipping report candidate before research because preflight is weak: %s [%s]", brief.case_name, brief.category)
                 action_notice(f"candidate_skip_preflight attempt={attempted} case={brief.case_name}")

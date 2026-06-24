@@ -57,6 +57,13 @@ DEAL_VALUE_RE = re.compile(
     r"crore|million|billion|bn|mn)",
     re.I,
 )
+TRANSACTION_STRUCTURE_RE = re.compile(
+    r"(全部股权|全部股份|控股权|控制权|表决权|支付现金|现金支付|现金收购|"
+    r"发行股份(?:及支付现金)?|股份支付|定向发行|定增|全额认购|认购|"
+    r"协议转让|要约收购|收购报告书|权益变动报告书|股权转让|股份转让|受让.{0,20}(?:股权|股份)|"
+    r"非货币(?:出资|实缴)|作价出资)",
+    re.I,
+)
 RICH_DISCLOSURE_HINTS = (
     "要约收购报告书", "要约收购", "权益变动报告书", "详式权益变动", "收购报告书",
     "重大资产重组报告书", "重组报告书", "交易报告书", "草案", "预案",
@@ -163,7 +170,44 @@ def has_deal_value_signal(value: str | None) -> bool:
     text = clean_cell(value)
     if is_placeholder(text):
         return False
-    return bool(DEAL_VALUE_RE.search(text))
+    return bool(DEAL_VALUE_RE.search(text) or TRANSACTION_STRUCTURE_RE.search(text))
+
+
+def extract_transaction_terms(*values: str) -> str:
+    text = clean_cell("；".join(value for value in values if value and not is_placeholder(value)))
+    if not text:
+        return ""
+    terms: list[str] = []
+
+    def add(label: str) -> None:
+        if label not in terms:
+            terms.append(label)
+
+    for match in DEAL_VALUE_RE.finditer(text):
+        add(match.group(0))
+        if len(terms) >= 6:
+            break
+    if re.search(r"全部股权|全部股份", text):
+        add("全部股权/股份")
+    if re.search(r"支付现金|现金支付|现金收购", text):
+        add("现金支付")
+    if re.search(r"发行股份及支付现金", text):
+        add("发行股份及支付现金")
+    elif re.search(r"发行股份|股份支付", text):
+        add("股份支付")
+    if re.search(r"协议转让", text):
+        add("协议转让")
+    if re.search(r"股权转让|股份转让|受让.{0,20}(?:股权|股份)", text):
+        add("股权/股份受让")
+    if re.search(r"要约收购", text):
+        add("要约收购")
+    if re.search(r"定向发行|定增|全额认购|认购", text):
+        add("定向发行/认购")
+    if re.search(r"非货币(?:出资|实缴)|作价出资", text):
+        add("非货币出资/作价出资")
+    if re.search(r"控股权|控制权|表决权", text):
+        add("控制权/表决权安排")
+    return "；".join(terms[:8])
 
 
 def has_completed_signal(value: str | None) -> bool:
@@ -580,6 +624,7 @@ def _brief_from_weekly_excel_row(row: dict[str, object]) -> CaseBrief | None:
     elif "吸收合并" in intro:
         case_name = f"{acquirer}吸收合并{target}"
     evidence = "；".join(x for x in [intro, remark] if x and not is_placeholder(x))
+    transaction_terms = extract_transaction_terms(deal_value, intro, remark)
     return CaseBrief(
         case_name=case_name,
         category=category,
@@ -594,11 +639,11 @@ def _brief_from_weekly_excel_row(row: dict[str, object]) -> CaseBrief | None:
         is_completed=_excel_bool_completed(deal_status, remark, intro),
         acquirer=acquirer,
         target=target,
-        deal_value="" if is_placeholder(deal_value) else deal_value,
+        deal_value=transaction_terms or ("" if is_placeholder(deal_value) else deal_value),
         deal_status="；".join(x for x in [deal_time, deal_status] if x and not is_placeholder(x)),
         buyer_motivation=evidence,
         seller_motivation=remark if remark and not is_placeholder(remark) else "",
-        financial_highlights=evidence if has_deal_number(evidence) else "",
+        financial_highlights=evidence if has_deal_number(evidence) else transaction_terms,
     )
 
 
