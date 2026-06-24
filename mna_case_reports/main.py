@@ -151,6 +151,7 @@ def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dic
     if timeout_seconds <= 0:
         return generate_article(brief)
     heartbeat_seconds = int(os.getenv("REPORT_WORKER_HEARTBEAT_SECONDS", "30"))
+    allow_partial_draft = env_flag("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE")
     ctx = multiprocessing.get_context(os.getenv("REPORT_WORKER_START_METHOD", "fork"))
     result_queue: multiprocessing.Queue = ctx.Queue()
     process = ctx.Process(target=_generate_article_worker, args=(brief, result_queue), daemon=True)
@@ -159,6 +160,8 @@ def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dic
     deadline = started + timeout_seconds
     last_heartbeat = 0.0
     result: dict[str, object] | None = None
+    partial_article: dict[str, object] | None = None
+    partial_stage = ""
     while True:
         now = time.monotonic()
         elapsed = int(now - started)
@@ -173,6 +176,15 @@ def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dic
         if isinstance(message, dict):
             if message.get("type") == "event":
                 action_notice(str(message.get("message") or "worker_event"))
+            elif message.get("type") == "partial":
+                article = message.get("article")
+                if isinstance(article, dict):
+                    partial_article = article
+                    partial_stage = str(message.get("stage") or "partial")
+                    action_notice(
+                        f"candidate_partial_draft case={brief.case_name} stage={partial_stage} "
+                        f"length={message.get('length')} hard={message.get('hard')} quality={message.get('quality')}"
+                    )
             elif message.get("type") == "result":
                 result = message
                 break
@@ -184,6 +196,9 @@ def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dic
             if process.is_alive():
                 process.kill()
                 process.join(5)
+            if allow_partial_draft and partial_article is not None:
+                action_notice(f"candidate_timeout_returning_partial case={brief.case_name} stage={partial_stage}")
+                return partial_article
             raise CandidateTimeoutError(f"Candidate worker timed out after {timeout_seconds}s: {brief.case_name}")
 
     process.join(5)
@@ -194,9 +209,21 @@ def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dic
             break
         if isinstance(message, dict) and message.get("type") == "event":
             action_notice(str(message.get("message") or "worker_event"))
+        elif isinstance(message, dict) and message.get("type") == "partial":
+            article = message.get("article")
+            if isinstance(article, dict):
+                partial_article = article
+                partial_stage = str(message.get("stage") or "partial")
+                action_notice(
+                    f"candidate_partial_draft case={brief.case_name} stage={partial_stage} "
+                    f"length={message.get('length')} hard={message.get('hard')} quality={message.get('quality')}"
+                )
         elif isinstance(message, dict) and message.get("type") == "result" and result is None:
             result = message
     if result is None:
+        if allow_partial_draft and partial_article is not None:
+            action_notice(f"candidate_exited_returning_partial case={brief.case_name} stage={partial_stage} exitcode={process.exitcode}")
+            return partial_article
         raise RuntimeError(f"Candidate worker exited without returning a result: {brief.case_name} exitcode={process.exitcode}")
     if result.get("ok"):
         article = result.get("article")
@@ -210,6 +237,9 @@ def generate_article_with_timeout(brief: CaseBrief, timeout_seconds: int) -> dic
         print(f"WORKER_TRACEBACK case={brief.case_name}", flush=True)
         print(tb, flush=True)
     LOGGER.error("Worker traceback for %s:\n%s", brief.case_name, tb)
+    if allow_partial_draft and partial_article is not None:
+        action_notice(f"candidate_error_returning_partial case={brief.case_name} stage={partial_stage} error={error[:400]}")
+        return partial_article
     raise RuntimeError(error)
 
 

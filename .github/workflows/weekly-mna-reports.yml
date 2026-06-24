@@ -39,33 +39,33 @@ on:
         required: false
         default: "0"
       candidate_timeout:
-        description: "Per-candidate timeout seconds. Use 900-1200 for a focused single-case full draft."
+        description: "Per-candidate timeout seconds. Use 900-1200 for long-form production drafts."
         required: false
-        default: "300"
+        default: "900"
       model_timeout:
         description: "Per-light-model-call timeout seconds."
         required: false
-        default: "90"
+        default: "120"
       article_model_timeout:
         description: "Per article-model call timeout seconds for long-form drafting and repair."
         required: false
-        default: "300"
+        default: "240"
       article_model_provider:
         description: "Article model provider for complex long-form writing: rkapi, deepseek, or off."
         required: false
-        default: "rkapi"
+        default: "deepseek-pro"
       allow_draft_on_validation_failure:
-        description: "Write a DOCX draft even if article quality validation fails. Manual smoke-test only."
+        description: "Write a DOCX draft even if article quality validation fails, preserving issues in logs."
         required: false
-        default: "0"
+        default: "1"
       fast_draft_mode:
         description: "Use a shorter single-pass article prompt for manual smoke-test DOCX generation."
         required: false
         default: "0"
       docx_validate_warn_only:
-        description: "Do not fail the workflow on DOCX validator issues. Manual smoke-test only."
+        description: "Do not fail the workflow on DOCX validator issues; write the validation manifest."
         required: false
-        default: "0"
+        default: "1"
       allow_static_weekly_pool:
         description: "Include static/seed report cases when the weekly pool is too weak. Smoke-test only."
         required: false
@@ -99,12 +99,12 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_MODEL: deepseek-v4-flash
       REPORT_ARTICLE_API_KEY: ${{ secrets.RKAPI_API_KEY }}
-      REPORT_ARTICLE_MODEL_PROVIDER: ${{ github.event.inputs.article_model_provider || vars.REPORT_ARTICLE_MODEL_PROVIDER || 'rkapi' }}
+      REPORT_ARTICLE_MODEL_PROVIDER: ${{ github.event.inputs.article_model_provider || vars.REPORT_ARTICLE_MODEL_PROVIDER || 'deepseek-pro' }}
       REPORT_ARTICLE_BASE_URL: ${{ vars.REPORT_ARTICLE_BASE_URL || 'https://rkapi.com/v1' }}
       REPORT_ARTICLE_MODEL: ${{ vars.REPORT_ARTICLE_MODEL || 'gpt-5.5' }}
       REPORT_ARTICLE_REASONING_EFFORT: ${{ vars.REPORT_ARTICLE_REASONING_EFFORT || 'xhigh' }}
       REPORT_ARTICLE_MAX_TOKENS: ${{ vars.REPORT_ARTICLE_MAX_TOKENS || '9000' }}
-      REPORT_ARTICLE_MODEL_RETRIES: ${{ vars.REPORT_ARTICLE_MODEL_RETRIES || '1' }}
+      REPORT_ARTICLE_MODEL_RETRIES: ${{ vars.REPORT_ARTICLE_MODEL_RETRIES || '0' }}
       REPORT_ARTICLE_FALLBACK_PROVIDER: ${{ vars.REPORT_ARTICLE_FALLBACK_PROVIDER || 'deepseek-pro' }}
       REPORT_ARTICLE_DEEPSEEK_MODEL: ${{ vars.REPORT_ARTICLE_DEEPSEEK_MODEL || 'deepseek-v4-pro' }}
       REPORT_MODE: ${{ github.event.inputs.mode || 'weekly' }}
@@ -120,13 +120,13 @@ jobs:
       REPORT_FINAL_REPAIR_REVISIONS: "1"
       REPORT_MAX_GENERATION_ATTEMPTS: ${{ github.event.inputs.max_attempts || '0' }}
       REPORT_CANDIDATE_POOL_MAX: ${{ github.event.inputs.candidate_pool_max || '0' }}
-      REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: ${{ github.event.inputs.candidate_timeout || '300' }}
+      REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: ${{ github.event.inputs.candidate_timeout || '900' }}
       REPORT_WORKER_HEARTBEAT_SECONDS: "30"
-      REPORT_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.model_timeout || '90' }}
-      REPORT_ARTICLE_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.article_model_timeout || '300' }}
-      REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE: ${{ github.event.inputs.allow_draft_on_validation_failure || '0' }}
+      REPORT_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.model_timeout || '120' }}
+      REPORT_ARTICLE_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.article_model_timeout || '240' }}
+      REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE: ${{ github.event.inputs.allow_draft_on_validation_failure || '1' }}
       REPORT_FAST_DRAFT_MODE: ${{ github.event.inputs.fast_draft_mode || '0' }}
-      REPORT_DOCX_VALIDATE_WARN_ONLY: ${{ github.event.inputs.docx_validate_warn_only || '0' }}
+      REPORT_DOCX_VALIDATE_WARN_ONLY: ${{ github.event.inputs.docx_validate_warn_only || '1' }}
       REPORT_ALLOW_STATIC_WEEKLY_POOL: ${{ github.event.inputs.allow_static_weekly_pool || '0' }}
       REPORT_ALLOW_WEAK_SINGLE_CANDIDATE: ${{ github.event.inputs.allow_weak_single_candidate || '0' }}
       REPORT_MIN_EXTERNAL_RESEARCH_ITEMS: ${{ github.event.inputs.min_external_research_items || '1' }}

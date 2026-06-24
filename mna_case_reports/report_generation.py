@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ from .research import collect_research_context
 
 LOGGER = logging.getLogger(__name__)
 PROGRESS_QUEUE: Any = None
+DISABLED_ARTICLE_PROVIDERS: set[str] = set()
 
 
 def set_progress_queue(queue: Any | None) -> None:
@@ -77,6 +79,10 @@ def _use_article_model() -> bool:
         action_notice(f"report_stage stage=article_model_unavailable provider={provider} missing={api_key_env} fallback=deepseek")
         return False
     return True
+
+
+def _provider_has_api_key(provider: str) -> bool:
+    return bool(provider and provider not in {"none", "off", "0"} and os.getenv(_article_api_key_env(provider)))
 
 
 def _article_api_key_env(provider: str) -> str:
@@ -134,6 +140,10 @@ def article_chat_json(messages: list[dict[str, str]], *, timeout: int | None = N
     if not _use_article_model():
         return chat_json(messages, timeout=timeout or model_timeout(180))
     provider = _article_provider()
+    fallback_provider = (os.getenv("REPORT_ARTICLE_FALLBACK_PROVIDER") or "deepseek-pro").strip().lower()
+    if provider in DISABLED_ARTICLE_PROVIDERS and fallback_provider not in {"", "none", "off", "0", provider} and _provider_has_api_key(fallback_provider):
+        action_notice(f"report_stage stage=article_model_primary_disabled provider={provider} using={fallback_provider}")
+        return _article_chat_json_provider(messages, provider=fallback_provider, timeout=timeout)
     retries = max(0, int(os.getenv("REPORT_ARTICLE_MODEL_RETRIES", "1")))
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
@@ -147,9 +157,9 @@ def article_chat_json(messages: list[dict[str, str]], *, timeout: int | None = N
             action_notice(f"report_stage stage=article_model_retry provider={provider} attempt={attempt + 1} delay_s={delay} error={str(exc)[:220]}")
             time.sleep(delay)
 
-    fallback_provider = (os.getenv("REPORT_ARTICLE_FALLBACK_PROVIDER") or "deepseek-pro").strip().lower()
-    if fallback_provider and fallback_provider not in {"none", "off", "0", provider} and os.getenv(_article_api_key_env(fallback_provider)):
+    if fallback_provider and fallback_provider not in {"none", "off", "0", provider} and _provider_has_api_key(fallback_provider):
         action_notice(f"report_stage stage=article_model_fallback from={provider} to={fallback_provider} reason={str(last_exc)[:220]}")
+        DISABLED_ARTICLE_PROVIDERS.add(provider)
         return _article_chat_json_provider(messages, provider=fallback_provider, timeout=timeout)
     if last_exc:
         raise last_exc
@@ -162,6 +172,35 @@ def external_evidence_count(research_rows: list[dict[str, str]]) -> int:
 
 def _allow_fact_pack_smoke_test() -> bool:
     return os.getenv("REPORT_ALLOW_FACT_PACK_VALIDATION_FAILURE", "0") == "1"
+
+
+def _allow_draft_on_validation_failure() -> bool:
+    return os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") == "1"
+
+
+def publish_partial_article(
+    brief: CaseBrief,
+    article: dict[str, object],
+    *,
+    stage: str,
+    hard_issues: list[str] | None = None,
+    quality_issues: list[str] | None = None,
+) -> None:
+    if PROGRESS_QUEUE is None or not _allow_draft_on_validation_failure():
+        return
+    partial = postprocess_article(copy.deepcopy(article), brief)
+    if hard_issues:
+        partial["validation_issues"] = hard_issues
+    if quality_issues:
+        partial["quality_issues"] = quality_issues
+    PROGRESS_QUEUE.put({
+        "type": "partial",
+        "stage": stage,
+        "article": partial,
+        "length": chinese_length(article_text(partial)),
+        "hard": len(hard_issues or []),
+        "quality": len(quality_issues or []),
+    })
 
 
 def enforce_hard_length(article: dict[str, object], brief: CaseBrief, *, stage: str) -> dict[str, object]:
@@ -490,6 +529,13 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         article = enforce_hard_length(article, brief, stage="fast_draft")
         final_issues = validate_article(article, brief)
         final_quality_issues = assess_quality(article)
+        publish_partial_article(
+            brief,
+            article,
+            stage="fast_draft",
+            hard_issues=final_issues,
+            quality_issues=final_quality_issues,
+        )
         if final_issues or final_quality_issues:
             LOGGER.warning("Fast draft has validation/quality issues: %s hard=%s quality=%s", brief.case_name, final_issues, final_quality_issues)
             if os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") != "1":
@@ -508,6 +554,7 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
     article = enforce_hard_length(article, brief, stage="article_draft")
     issues = validate_article(article, brief)
     quality_issues = assess_quality(article)
+    publish_partial_article(brief, article, stage="article_draft", hard_issues=issues, quality_issues=quality_issues)
     max_revisions = int(os.getenv("REPORT_MAX_REVISIONS", "3"))
     for round_idx in range(max_revisions):
         combined_issues = issues + quality_issues
@@ -536,12 +583,26 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         action_notice(f"report_stage case={brief.case_name} stage=revision_done round={round_idx + 1} length={chinese_length(article_text(article))}")
         issues = validate_article(article, brief)
         quality_issues = assess_quality(article)
+        publish_partial_article(
+            brief,
+            article,
+            stage=f"revision_{round_idx + 1}",
+            hard_issues=issues,
+            quality_issues=quality_issues,
+        )
 
     action_notice(f"report_stage case={brief.case_name} stage=final_repair_pipeline_start length={chinese_length(article_text(article))}")
     article = final_repair_article(article, brief, research_rows, fact_pack, narrative_plan)
     article = enforce_hard_length(article, brief, stage="final_repair")
     final_issues = validate_article(article, brief)
     final_quality_issues = assess_quality(article)
+    publish_partial_article(
+        brief,
+        article,
+        stage="final_repair",
+        hard_issues=final_issues,
+        quality_issues=final_quality_issues,
+    )
     if final_issues or final_quality_issues:
         LOGGER.warning("Report still has validation/quality issues after narrative pipeline: %s hard=%s quality=%s", brief.case_name, final_issues, final_quality_issues)
         if os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") == "1":
