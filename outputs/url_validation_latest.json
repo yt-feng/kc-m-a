@@ -2,10 +2,10 @@
   "workbook_count": 1,
   "results": [
     {
-      "path": "outputs/并购案例一览_20260612_20260619.xlsx",
-      "url_count": 672,
-      "case_rows": 22,
-      "case_url_nonempty": 22,
+      "path": "outputs/并购案例一览_20260617_20260624.xlsx",
+      "url_count": 532,
+      "case_rows": 25,
+      "case_url_nonempty": 25,
       "issue_count": 0,
       "issues": []
     }
