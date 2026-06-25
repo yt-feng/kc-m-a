@@ -1,0 +1,48 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20260626_061311",
+  "requested_count": 4,
+  "candidate_count": 8,
+  "attempted_count": 8,
+  "count": 1,
+  "files": [
+    "case_reports/01_整合一级资产_资本化/weekly_20260626_061311_上海张江收购上海张江科学之门科技：协议转让与交割条件.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "上海浦东资本投资运营有限公司收购上海汇丽建材股份有限公司",
+      "category": "上市公司控股权并购",
+      "error": "Report quality validation failed for 上海浦东资本投资运营有限公司收购上海汇丽建材股份有限公司: hard=[] quality=['长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。']"
+    },
+    {
+      "case_name": "恒为科技（上海）股份有限公司收购上海数珩信息科技股份有限公司",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Insufficient external research evidence for 恒为科技（上海）股份有限公司收购上海数珩信息科技股份有限公司; only structured seed was found."
+    },
+    {
+      "case_name": "无锡振华收购德维嘉汽车电子系统(无锡)有限公司",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "DeepSeek JSON repair failed: No JSON object found: line 1 column 1 (char 0); original prefix="
+    },
+    {
+      "case_name": "蓝思科技股份有限公司收购巨腾国际控股有限公司",
+      "category": "跨境并购",
+      "error": "Report quality validation failed for 蓝思科技股份有限公司收购巨腾国际控股有限公司: hard=['中文字符与英文单词或数字之间不应添加空格。'] quality=['段落开头重复，行文模式化；需要调整段落推进方式，避免每段都用相同句式开头。', '结语缺少判断和解释力，需要说明本案事实如何推导出同类并购的方法论启示。']"
+    },
+    {
+      "case_name": "邵健锋、圆安贵投资收购深圳市今天国际物流技术股份有限公司",
+      "category": "上市公司控股权并购",
+      "error": "Report quality validation failed for 邵健锋、圆安贵投资收购深圳市今天国际物流技术股份有限公司: hard=['正文不得出现xx%、待补充、待确认、TODO等事实占位符；资料未披露时必须直接写明未披露，已披露数字必须使用准确值。'] quality=[]"
+    },
+    {
+      "case_name": "东诚药业收购烟台蓝纳成生物技术股份有限公司",
+      "category": "分拆上市",
+      "error": "preflight rejected weak report candidate"
+    },
+    {
+      "case_name": "亨通光电收购亨通华海",
+      "category": "分拆上市",
+      "error": "preflight rejected weak report candidate"
+    }
+  ]
+}
