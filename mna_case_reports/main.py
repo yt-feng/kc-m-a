@@ -20,9 +20,11 @@ from .case_selection import (
     CaseBrief,
     briefs_from_latest_weekly_workbook,
     choose_balanced,
+    completion_briefs_from_raw_items,
     discover_backfill_cases,
     extended_pool_briefs,
     has_usable_source_url,
+    is_report_completed_candidate,
     is_report_ready_candidate,
     lightweight_weekly_candidates,
     raw_items_from_latest_weekly_workbook,
@@ -257,6 +259,18 @@ def should_try_candidate(brief: CaseBrief, *, written_briefs: list[CaseBrief], r
     return True
 
 
+def candidate_readiness_counts(briefs: list[CaseBrief]) -> dict[str, int]:
+    ready = [brief for brief in briefs if is_report_ready_candidate(brief)]
+    return {
+        "total": len(briefs),
+        "completed": sum(1 for brief in briefs if is_report_completed_candidate(brief)),
+        "ready": len(ready),
+        "source_ready": sum(1 for brief in ready if has_usable_source_url(brief.source_url) or brief.is_classic),
+        "domestic_ready": sum(1 for brief in ready if brief.is_domestic),
+        "domestic_source_ready": sum(1 for brief in ready if brief.is_domestic and (has_usable_source_url(brief.source_url) or brief.is_classic)),
+    }
+
+
 def main() -> None:
     args = parse_args()
     configure_logging(args.verbose)
@@ -274,7 +288,10 @@ def main() -> None:
     if args.mode == "backfill":
         LOGGER.info("Discovering backfill cases")
         action_notice("candidate_pool_stage=backfill_discovery_start")
-        briefs = discover_backfill_cases(max((args.offset + pool_count) * 3, 30))
+        briefs = discover_backfill_cases(
+            max((args.offset + pool_count) * 3, 30),
+            include_live=os.getenv("REPORT_BACKFILL_LIVE_SEARCH", "1") == "1",
+        )
         action_notice(f"candidate_pool_stage=backfill_discovery_done candidates={len(briefs)}")
     elif use_static_smoke_pool(args, pool_count):
         LOGGER.info("Using static-first weekly smoke-test candidate pool")
@@ -287,41 +304,58 @@ def main() -> None:
         action_notice("candidate_pool_stage=excel_structured_start")
         briefs = briefs_from_latest_weekly_workbook(Path(args.weekly_output_dir))
         required_domestic = min(args.min_domestic, args.count)
-        ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
-        source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
-        domestic_ready_count = sum(1 for brief in briefs if brief.is_domestic and is_report_ready_candidate(brief))
-        domestic_source_ready_count = sum(1 for brief in briefs if brief.is_domestic and is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
+        counts = candidate_readiness_counts(briefs)
         LOGGER.info(
-            "Weekly Excel candidate pool: total=%s ready=%s source_ready=%s domestic_ready=%s domestic_source_ready=%s",
-            len(briefs),
-            ready_count,
-            source_ready_count,
-            domestic_ready_count,
-            domestic_source_ready_count,
+            "Weekly Excel candidate pool: total=%s completed=%s ready=%s source_ready=%s domestic_ready=%s domestic_source_ready=%s",
+            counts["total"],
+            counts["completed"],
+            counts["ready"],
+            counts["source_ready"],
+            counts["domestic_ready"],
+            counts["domestic_source_ready"],
         )
         action_notice(
-            f"candidate_pool_stage=excel_structured_done total={len(briefs)} ready={ready_count} "
-            f"source_ready={source_ready_count} domestic_source_ready={domestic_source_ready_count}"
+            f"candidate_pool_stage=excel_structured_done total={counts['total']} completed={counts['completed']} ready={counts['ready']} "
+            f"source_ready={counts['source_ready']} domestic_source_ready={counts['domestic_source_ready']}"
         )
-        if ready_count < args.count or source_ready_count < args.count or domestic_source_ready_count < required_domestic:
-            LOGGER.info("Summarizing raw candidates from latest weekly Excel because structured Excel source-ready pool is below requested count")
+        if counts["ready"] < args.count or counts["source_ready"] < args.count or counts["domestic_source_ready"] < required_domestic:
+            LOGGER.info("Summarizing raw candidates from latest weekly Excel because completed source-ready pool is below requested count")
             action_notice(f"candidate_pool_stage=excel_raw_summary_start max_items={args.max_raw_items}")
             excel_raw_items = raw_items_from_latest_weekly_workbook(Path(args.weekly_output_dir), max_items=args.max_raw_items)
-            excel_raw_briefs = summarize_raw_items(excel_raw_items, target_count=max(pool_count * 3, 12))
-            LOGGER.info("Raw weekly Excel candidate pool: raw=%s summarized=%s", len(excel_raw_items), len(excel_raw_briefs))
+            excel_raw_briefs = completion_briefs_from_raw_items(excel_raw_items, target_count=max(pool_count * 3, 12))
+            if len(excel_raw_briefs) < max(pool_count, args.count):
+                excel_raw_briefs.extend(summarize_raw_items(excel_raw_items, target_count=max(pool_count * 3, 12)))
+            LOGGER.info("Raw weekly Excel candidate pool: raw=%s promoted_or_summarized=%s", len(excel_raw_items), len(excel_raw_briefs))
             action_notice(f"candidate_pool_stage=excel_raw_summary_done raw={len(excel_raw_items)} summarized={len(excel_raw_briefs)}")
             briefs.extend(excel_raw_briefs)
-            ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief))
-            source_ready_count = sum(1 for brief in briefs if is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
-            domestic_source_ready_count = sum(1 for brief in briefs if brief.is_domestic and is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url))
-        if ready_count < args.count or source_ready_count < args.count or domestic_source_ready_count < required_domestic:
-            LOGGER.info("Collecting live weekly report candidates because Excel source-ready pool is below requested count")
+            counts = candidate_readiness_counts(briefs)
+            action_notice(
+                f"candidate_pool_stage=excel_raw_pool_updated total={counts['total']} completed={counts['completed']} "
+                f"ready={counts['ready']} domestic_source_ready={counts['domestic_source_ready']}"
+            )
+        if counts["ready"] < args.count or counts["source_ready"] < args.count or counts["domestic_source_ready"] < required_domestic:
+            LOGGER.info("Collecting live weekly report candidates because completed source-ready pool is below requested count")
             action_notice(f"candidate_pool_stage=live_weekly_start days={args.days} max_items={args.max_raw_items}")
             raw_items = lightweight_weekly_candidates(args.days, args.max_raw_items)
-            live_briefs = summarize_raw_items(raw_items, target_count=max(pool_count * 3, 12))
+            live_briefs = completion_briefs_from_raw_items(raw_items, target_count=max(pool_count * 3, 12))
+            if len(live_briefs) < max(pool_count, args.count):
+                live_briefs.extend(summarize_raw_items(raw_items, target_count=max(pool_count * 3, 12)))
             LOGGER.info("Live weekly candidate pool: raw=%s summarized=%s", len(raw_items), len(live_briefs))
             action_notice(f"candidate_pool_stage=live_weekly_done raw={len(raw_items)} summarized={len(live_briefs)}")
             briefs.extend(live_briefs)
+            counts = candidate_readiness_counts(briefs)
+        if counts["ready"] < args.count or counts["domestic_source_ready"] < required_domestic:
+            LOGGER.info("Discovering completed fallback report candidates because weekly completed pool is below requested count")
+            action_notice("candidate_pool_stage=completed_fallback_start")
+            fallback_briefs = discover_backfill_cases(max((args.offset + pool_count) * 3, 30), include_live=False)
+            LOGGER.info("Completed fallback candidate pool: candidates=%s", len(fallback_briefs))
+            action_notice(f"candidate_pool_stage=completed_fallback_done candidates={len(fallback_briefs)}")
+            briefs.extend(fallback_briefs)
+            counts = candidate_readiness_counts(briefs)
+            action_notice(
+                f"candidate_pool_stage=completed_fallback_pool_updated total={counts['total']} completed={counts['completed']} "
+                f"ready={counts['ready']} domestic_source_ready={counts['domestic_source_ready']}"
+            )
         if os.getenv("REPORT_ALLOW_STATIC_WEEKLY_POOL", "0") == "1":
             LOGGER.info("Static weekly report pool is explicitly enabled")
             action_notice("candidate_pool_stage=static_append_start")
@@ -379,6 +413,12 @@ def main() -> None:
                     "failures": failures,
                 })
                 continue
+        if not is_report_completed_candidate(brief):
+            message = "formal report candidate is not completed"
+            LOGGER.info("Skipping incomplete report candidate after preflight: %s [%s]", brief.case_name, brief.category)
+            action_notice(f"candidate_skip_incomplete attempt={attempted} case={brief.case_name}")
+            failures.append({"case_name": brief.case_name, "category": brief.category, "error": message})
+            continue
         LOGGER.info("Generating report attempt %s from candidate %s/%s: %s [%s]", attempted, index, len(selected), brief.case_name, brief.category)
         action_notice(f"candidate_start attempt={attempted}/{max_attempts} selected_index={index}/{len(selected)} case={brief.case_name} category={brief.category}")
         write_progress(progress_path, {
@@ -434,6 +474,14 @@ def main() -> None:
 
     if not written:
         raise RuntimeError("All report generations failed; see progress manifest for details.")
+    incomplete_written = [brief.case_name for brief in written_briefs if not is_report_completed_candidate(brief)]
+    if incomplete_written:
+        raise RuntimeError("Generated reports include incomplete transactions: " + "；".join(incomplete_written))
+    if len(written) < args.count and env_flag("REPORT_REQUIRE_FULL_COUNT", default=True):
+        raise RuntimeError(
+            f"Generated {len(written)}/{args.count} completed reports; "
+            "strict architecture gates rejected the remaining candidates."
+        )
 
 
 if __name__ == "__main__":

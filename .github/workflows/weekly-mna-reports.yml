@@ -8,6 +8,9 @@ on:
   push:
     paths:
       - ".github/workflows/weekly-mna-reports.yml"
+      - "mna_case_reports/**"
+      - "mna_weekly_tracker/**"
+      - "requirements.txt"
   workflow_dispatch:
     inputs:
       mode:
@@ -113,7 +116,7 @@ jobs:
       REPORT_LOOKBACK_DAYS: ${{ github.event.inputs.days || '7' }}
       REPORT_OFFSET: ${{ github.event.inputs.offset || '0' }}
       REPORT_OUTPUT_ROOT: case_reports
-      REPORT_MAX_RAW_ITEMS: "220"
+      REPORT_MAX_RAW_ITEMS: "1000"
       REPORT_CONTINUE_ON_ERROR: "1"
       REPORT_MAX_REVISIONS: "1"
       REPORT_LENGTH_REWRITE_REVISIONS: "1"

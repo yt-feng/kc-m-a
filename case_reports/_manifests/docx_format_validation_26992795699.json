@@ -1,5 +1,5 @@
 {
-  "count": 4,
+  "count": 3,
   "failed": 0,
   "results": [
     {
@@ -7,14 +7,6 @@
       "ok": true,
       "issues": [],
       "heading_count": 7,
-      "body_count": 17,
-      "half_width_quote_count": 0
-    },
-    {
-      "file": "case_reports/02_上市平台持续整合/weekly_20260605_111733_上海概伦电子收购成都锐成芯微科技：交易复盘.docx",
-      "ok": true,
-      "issues": [],
-      "heading_count": 5,
       "body_count": 17,
       "half_width_quote_count": 0
     },
