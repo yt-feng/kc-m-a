@@ -332,6 +332,10 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
     return True
 
 
+def is_report_source_ready_candidate(brief: CaseBrief) -> bool:
+    return is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url)
+
+
 def has_rich_disclosure_signal(brief: CaseBrief) -> bool:
     text = "\n".join([brief.source_title, brief.why, brief.deal_status, brief.source_url])
     return any(token in text for token in RICH_DISCLOSURE_HINTS)
@@ -1029,7 +1033,7 @@ def completion_briefs_from_raw_items(raw_items: list[RawItem], target_count: int
     """Deterministically promote official completion announcements into report candidates."""
     briefs: list[CaseBrief] = []
     seen: set[str] = set()
-    pdf_budget = int(os.getenv("REPORT_RAW_COMPLETION_PDF_MAX", "32"))
+    pdf_budget = int(os.getenv("REPORT_RAW_COMPLETION_PDF_MAX", "64"))
     for item in raw_items:
         if len(briefs) >= target_count or pdf_budget <= 0:
             break
@@ -1163,6 +1167,10 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
         before_ready_filter = len(deduped)
         deduped = [brief for brief in deduped if is_report_ready_candidate(brief)]
         LOGGER.info("Strict report-ready filter: before=%s after=%s", before_ready_filter, len(deduped))
+    if os.getenv("REPORT_SOURCE_READY_ONLY", "1") == "1":
+        before_source_filter = len(deduped)
+        deduped = [brief for brief in deduped if is_report_source_ready_candidate(brief)]
+        LOGGER.info("Strict report-source-ready filter: before=%s after=%s", before_source_filter, len(deduped))
     counts = existing_counts(report_root)
     selected: list[CaseBrief] = []
     selected_keys: set[str] = set()

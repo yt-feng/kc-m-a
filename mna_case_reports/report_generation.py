@@ -224,6 +224,75 @@ def publish_partial_article(
     })
 
 
+def _clip_text_piece(text: str, target_chinese_len: int, *, min_len: int = 120) -> str:
+    text = str(text or "").strip()
+    if chinese_length(text) <= target_chinese_len:
+        return text
+    target_chinese_len = max(min_len, target_chinese_len)
+    low = min(min_len, len(text))
+    high = len(text)
+    best = text[:low]
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = text[:mid].rstrip("，；、：: ")
+        if chinese_length(candidate) <= target_chinese_len:
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+    window_start = max(0, len(best) - 80)
+    for punct in ("。", "；", "，", "、"):
+        idx = best.rfind(punct, window_start)
+        if idx > max(10, min_len // 2):
+            best = best[: idx + 1]
+            break
+    best = best.rstrip("，；、：: ")
+    if best and best[-1] not in "。！？；":
+        best += "。"
+    return best
+
+
+def _force_trim_article_to_max(article: dict[str, object], brief: CaseBrief, max_chars: int) -> dict[str, object]:
+    """Last-resort deterministic trim for small post-repair overages."""
+    article = postprocess_article(article, brief)
+    sections = article.get("sections") or []
+    if not isinstance(sections, list):
+        return article
+    for _ in range(12):
+        length = chinese_length(article_text(article))
+        if length <= max_chars:
+            return postprocess_article(article, brief)
+        overage = length - max_chars
+        candidates: list[tuple[int, int, int, int, str]] = []
+        intro = str(article.get("intro") or "")
+        if chinese_length(intro) > 140:
+            candidates.append((2, chinese_length(intro), -1, -1, intro))
+        for section_index, section in enumerate(sections):
+            if not isinstance(section, dict):
+                continue
+            paragraphs = section.get("paragraphs") or []
+            if not isinstance(paragraphs, list):
+                continue
+            priority = 1 if section_index == 0 else (3 if section_index == len(sections) - 1 else 0)
+            for paragraph_index, paragraph in enumerate(paragraphs):
+                text = str(paragraph or "")
+                paragraph_len = chinese_length(text)
+                if paragraph_len > 135:
+                    candidates.append((priority, paragraph_len, section_index, paragraph_index, text))
+        if not candidates:
+            return article
+        priority, piece_len, section_index, paragraph_index, text = sorted(candidates, key=lambda item: (item[0], -item[1]))[0]
+        min_keep = 120 if priority != 3 else 150
+        target_len = max(min_keep, piece_len - overage - 40)
+        clipped = _clip_text_piece(text, target_len, min_len=min_keep)
+        if section_index < 0:
+            article["intro"] = clipped
+        else:
+            sections[section_index]["paragraphs"][paragraph_index] = clipped
+        article = postprocess_article(article, brief)
+    return article
+
+
 def enforce_hard_length(article: dict[str, object], brief: CaseBrief, *, stage: str) -> dict[str, object]:
     article = postprocess_article(article, brief)
     length = chinese_length(article_text(article))
@@ -234,6 +303,8 @@ def enforce_hard_length(article: dict[str, object], brief: CaseBrief, *, stage: 
     action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_start length={length}")
     trimmed = trim_article(article, safe_max_chars)
     trimmed = postprocess_article(trimmed, brief)
+    if chinese_length(article_text(trimmed)) > safe_max_chars:
+        trimmed = _force_trim_article_to_max(trimmed, brief, safe_max_chars)
     trimmed_length = chinese_length(article_text(trimmed))
     action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_done length={trimmed_length}")
     if trimmed_length <= MAX_CHARS:
@@ -498,7 +569,9 @@ def _ensure_first_section(article: dict[str, object]) -> dict[str, object]:
 
 def _ensure_fact_boundary(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> None:
     text = article_text(article)
-    if "披露边界" in text and "收入、净利润、现金流" in text:
+    financial_terms = ("收入", "营收", "净利润", "现金流", "负债", "产能", "订单", "客户", "用户", "员工", "资源量", "股权")
+    financial_term_count = sum(1 for term in financial_terms if term in text)
+    if "披露边界" in text and "收入、净利润、现金流" in text and financial_term_count >= 5:
         return
     deal_value = fact_pack.deal_value or brief.deal_value or "公开资料未披露具体金额，但保留了支付方式、股权比例或交易结构线索"
     timeline = _clean_fact_values(fact_pack.timeline or [brief.deal_status], limit=2) or "公告、签署、交割或过户节点以公开披露为准"
@@ -520,6 +593,56 @@ def _ensure_fact_boundary(article: dict[str, object], brief: CaseBrief, fact_pac
     paragraphs = first["paragraphs"]
     if isinstance(paragraphs, list):
         paragraphs.insert(0, paragraph)
+
+
+def _ensure_long_analysis_paragraphs(article: dict[str, object]) -> None:
+    sections = article.get("sections")
+    if not isinstance(sections, list):
+        return
+
+    def paragraph_lengths() -> list[int]:
+        lengths: list[int] = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            paragraphs = section.get("paragraphs") or []
+            if isinstance(paragraphs, list):
+                lengths.extend(chinese_length(str(paragraph)) for paragraph in paragraphs if str(paragraph).strip())
+        return lengths
+
+    lengths = paragraph_lengths()
+    long_count = sum(1 for length in lengths if length >= 260)
+    if long_count >= 2:
+        return
+    for section in sections[:-1] or sections:
+        if long_count >= 2:
+            break
+        if not isinstance(section, dict):
+            continue
+        paragraphs = section.get("paragraphs") or []
+        if not isinstance(paragraphs, list) or len(paragraphs) < 2:
+            continue
+        merged: list[str] = []
+        index = 0
+        while index < len(paragraphs):
+            current = str(paragraphs[index] or "").strip()
+            if (
+                current
+                and chinese_length(current) < 260
+                and index + 1 < len(paragraphs)
+                and chinese_length(current + str(paragraphs[index + 1] or "")) <= 520
+            ):
+                combined = current.rstrip("。；") + "；" + str(paragraphs[index + 1] or "").strip()
+                merged.append(combined)
+                if chinese_length(combined) >= 260:
+                    long_count += 1
+                index += 2
+                continue
+            merged.append(current)
+            if chinese_length(current) >= 260:
+                long_count += 1
+            index += 1
+        section["paragraphs"] = [paragraph for paragraph in merged if paragraph]
 
 
 def _ensure_conclusion(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> None:
@@ -594,6 +717,7 @@ def deterministic_article_repair(article: dict[str, object], brief: CaseBrief, f
     _ensure_fact_boundary(article, brief, fact_pack)
     _ensure_conclusion(article, brief, fact_pack)
     _repair_section_headings(article, brief, fact_pack)
+    _ensure_long_analysis_paragraphs(article)
     return postprocess_article(article, brief)
 
 
@@ -621,10 +745,15 @@ def expand_to_target_length(article: dict[str, object], brief: CaseBrief, resear
         if length < MIN_CHARS:
             LOGGER.info("Regenerating report %s for hard length check, attempt %s, current=%s", brief.case_name, attempt + 1, length)
             action_notice(f"report_stage case={brief.case_name} stage=length_rewrite attempt={attempt + 1} current_length={length}")
-            payload = article_chat_json(
-                build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True),
-                timeout=article_model_timeout(240),
-            )
+            try:
+                payload = article_chat_json(
+                    build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan, previous_article=article, expansion_only=True),
+                    timeout=article_model_timeout(240),
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Length rewrite model failed for %s; keeping best available article: %s", brief.case_name, exc)
+                action_notice(f"report_stage case={brief.case_name} stage=length_rewrite_model_failed error={str(exc)[:220]}")
+                break
             candidate = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
             candidate_score = _length_score(candidate)
             if candidate_score > best_score:
@@ -663,18 +792,23 @@ def final_repair_article(article: dict[str, object], brief: CaseBrief, research_
         LOGGER.info("Final report repair %s for %s due to hard=%s quality=%s", attempt + 1, brief.case_name, hard_issues, quality_issues)
         action_notice(f"report_stage case={brief.case_name} stage=final_repair attempt={attempt + 1} hard={len(hard_issues)} quality={len(quality_issues)}")
         current_score = _article_validation_score(article, brief)
-        payload = article_chat_json(
-            build_prompt(
-                brief,
-                research_rows,
-                fact_pack=fact_pack,
-                narrative_plan=narrative_plan,
-                revision_issues=hard_issues + quality_issues,
-                previous_article=article,
-                quality_rewrite=bool(quality_issues),
-            ),
-            timeout=article_model_timeout(240),
-        )
+        try:
+            payload = article_chat_json(
+                build_prompt(
+                    brief,
+                    research_rows,
+                    fact_pack=fact_pack,
+                    narrative_plan=narrative_plan,
+                    revision_issues=hard_issues + quality_issues,
+                    previous_article=article,
+                    quality_rewrite=bool(quality_issues),
+                ),
+                timeout=article_model_timeout(240),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Final repair model failed for %s; falling back to deterministic repairs: %s", brief.case_name, exc)
+            action_notice(f"report_stage case={brief.case_name} stage=final_repair_model_failed error={str(exc)[:220]}")
+            break
         candidate = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
         candidate = expand_to_target_length(candidate, brief, research_rows, fact_pack, narrative_plan)
         candidate = deterministic_article_repair(candidate, brief, fact_pack)
@@ -795,18 +929,23 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         is_quality_rewrite = bool(quality_issues) and not issues
         LOGGER.info("Revising report %s round %s due to issues: %s", brief.case_name, round_idx + 1, non_length_issues or combined_issues)
         action_notice(f"report_stage case={brief.case_name} stage=revision_start round={round_idx + 1} hard={len(issues)} quality={len(quality_issues)}")
-        payload = article_chat_json(
-            build_prompt(
-                brief,
-                research_rows,
-                fact_pack=fact_pack,
-                narrative_plan=narrative_plan,
-                revision_issues=non_length_issues or combined_issues,
-                previous_article=article,
-                quality_rewrite=is_quality_rewrite,
-            ),
-            timeout=article_model_timeout(240),
-        )
+        try:
+            payload = article_chat_json(
+                build_prompt(
+                    brief,
+                    research_rows,
+                    fact_pack=fact_pack,
+                    narrative_plan=narrative_plan,
+                    revision_issues=non_length_issues or combined_issues,
+                    previous_article=article,
+                    quality_rewrite=is_quality_rewrite,
+                ),
+                timeout=article_model_timeout(240),
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Revision model failed for %s round %s; entering final deterministic repair: %s", brief.case_name, round_idx + 1, exc)
+            action_notice(f"report_stage case={brief.case_name} stage=revision_model_failed round={round_idx + 1} error={str(exc)[:220]}")
+            break
         article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
         article = enforce_hard_length(article, brief, stage=f"revision_{round_idx + 1}")
         action_notice(f"report_stage case={brief.case_name} stage=revision_done round={round_idx + 1} length={chinese_length(article_text(article))}")
