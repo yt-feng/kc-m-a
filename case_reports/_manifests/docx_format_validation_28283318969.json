@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260627_160558_中芯国际集成电路制造收购中芯北方集成电路制造：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 17,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260627_160558_仇建平收购杭州巨星科技：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260627_160558_广州延丰数字科技收购浙江步森服饰：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260627_160558_金丹良收购浙江金海高科：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    }
+  ]
+}

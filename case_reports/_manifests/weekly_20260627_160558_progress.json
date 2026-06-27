@@ -1,0 +1,21 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20260627_160558",
+  "requested_count": 4,
+  "candidate_count": 8,
+  "attempted_count": 5,
+  "count": 4,
+  "files": [
+    "case_reports/03_上市公司控股权并购/weekly_20260627_160558_广州延丰数字科技收购浙江步森服饰：控制权与治理安排.docx",
+    "case_reports/03_上市公司控股权并购/weekly_20260627_160558_金丹良收购浙江金海高科：控制权与治理安排.docx",
+    "case_reports/03_上市公司控股权并购/weekly_20260627_160558_仇建平收购杭州巨星科技：要约与控制权安排.docx",
+    "case_reports/02_上市平台持续整合/weekly_20260627_160558_中芯国际集成电路制造收购中芯北方集成电路制造：协议转让与交割条件.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "旭阳集团有限公司受让滨海能源控制权股份",
+      "category": "上市公司控股权并购",
+      "error": "Report quality validation failed for 旭阳集团有限公司受让滨海能源控制权股份: hard=['章节分析过于泛化，需要把判断落回本案例的主体、金额/比例、资产、客户、治理或交割事实：集团产业版图的视角：控股主体迁移的潜在战略储藏。'] quality=[]"
+    }
+  ]
+}
