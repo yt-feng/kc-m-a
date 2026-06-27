@@ -258,15 +258,15 @@ def _force_trim_article_to_max(article: dict[str, object], brief: CaseBrief, max
     sections = article.get("sections") or []
     if not isinstance(sections, list):
         return article
-    for _ in range(12):
+    for _ in range(40):
         length = chinese_length(article_text(article))
         if length <= max_chars:
             return postprocess_article(article, brief)
         overage = length - max_chars
-        candidates: list[tuple[int, int, int, int, str]] = []
+        candidates: list[tuple[int, int, int, int, str, bool]] = []
         intro = str(article.get("intro") or "")
         if chinese_length(intro) > 140:
-            candidates.append((2, chinese_length(intro), -1, -1, intro))
+            candidates.append((2, chinese_length(intro), -1, -1, intro, False))
         for section_index, section in enumerate(sections):
             if not isinstance(section, dict):
                 continue
@@ -277,14 +277,24 @@ def _force_trim_article_to_max(article: dict[str, object], brief: CaseBrief, max
             for paragraph_index, paragraph in enumerate(paragraphs):
                 text = str(paragraph or "")
                 paragraph_len = chinese_length(text)
-                if paragraph_len > 135:
-                    candidates.append((priority, paragraph_len, section_index, paragraph_index, text))
+                if paragraph_len > 80:
+                    can_delete = priority == 0 and len([p for p in paragraphs if str(p).strip()]) > 1
+                    candidates.append((priority, paragraph_len, section_index, paragraph_index, text, can_delete))
         if not candidates:
             return article
-        priority, piece_len, section_index, paragraph_index, text = sorted(candidates, key=lambda item: (item[0], -item[1]))[0]
-        min_keep = 120 if priority != 3 else 150
-        target_len = max(min_keep, piece_len - overage - 40)
+        priority, piece_len, section_index, paragraph_index, text, can_delete = sorted(candidates, key=lambda item: (item[0], not item[5], -item[1]))[0]
+        if can_delete and (overage > 180 or piece_len < overage + 80):
+            section = sections[section_index]
+            paragraphs = section.get("paragraphs") if isinstance(section, dict) else []
+            if isinstance(paragraphs, list) and 0 <= paragraph_index < len(paragraphs):
+                del paragraphs[paragraph_index]
+                article = postprocess_article(article, brief)
+                continue
+        min_keep = 70 if priority != 3 else 120
+        target_len = max(min_keep, piece_len - overage - 70)
         clipped = _clip_text_piece(text, target_len, min_len=min_keep)
+        if chinese_length(clipped) >= piece_len and piece_len > min_keep:
+            clipped = _clip_text_piece(text, max(min_keep, piece_len - max(overage + 120, 180)), min_len=min_keep)
         if section_index < 0:
             article["intro"] = clipped
         else:
@@ -307,6 +317,11 @@ def enforce_hard_length(article: dict[str, object], brief: CaseBrief, *, stage: 
         trimmed = _force_trim_article_to_max(trimmed, brief, safe_max_chars)
     trimmed_length = chinese_length(article_text(trimmed))
     action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_done length={trimmed_length}")
+    if trimmed_length <= MAX_CHARS:
+        return trimmed
+    trimmed = _force_trim_article_to_max(trimmed, brief, MAX_CHARS - 20)
+    trimmed_length = chinese_length(article_text(trimmed))
+    action_notice(f"report_stage case={brief.case_name} stage={stage}_hard_trim_forced_done length={trimmed_length}")
     if trimmed_length <= MAX_CHARS:
         return trimmed
     LOGGER.warning(
@@ -473,7 +488,9 @@ def repair_article_against_fact_pack(article: dict[str, object], brief: CaseBrie
 
 
 def _compact_title_alias(value: str, *, max_len: int) -> str:
-    alias = compact_name(value) or str(value or "").strip()
+    original = str(value or "").strip()
+    suffix_only = re.sub(r"(股份有限公司|有限责任公司|有限公司|公司)$", "", original, flags=re.I).strip()
+    alias = suffix_only or compact_name(original) or original
     alias = re.sub(r"[（）()\"“”'‘’]", "", alias)
     alias = alias.replace("上海市", "上海").replace("深圳市", "深圳").replace("杭州市", "杭州")
     alias = alias.strip()
@@ -908,10 +925,18 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         return enforce_hard_length(article, brief, stage="fast_draft_return")
 
     action_notice(f"report_stage case={brief.case_name} stage=article_draft_start")
-    payload = article_chat_json(
-        build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan),
-        timeout=article_model_timeout(240),
-    )
+    try:
+        payload = article_chat_json(
+            build_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan),
+            timeout=article_model_timeout(240),
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Primary article draft model failed for %s; trying fast draft rescue: %s", brief.case_name, exc)
+        action_notice(f"report_stage case={brief.case_name} stage=article_draft_model_failed fallback=fast_draft error={str(exc)[:220]}")
+        payload = chat_json(
+            build_fast_draft_prompt(brief, research_rows, fact_pack=fact_pack, narrative_plan=narrative_plan),
+            timeout=model_timeout(180),
+        )
     article = repair_article_against_fact_pack(normalize_article(payload, brief), brief, fact_pack)
     action_notice(f"report_stage case={brief.case_name} stage=article_draft_done length={chinese_length(article_text(article))}")
     article = enforce_hard_length(article, brief, stage="article_draft")
@@ -974,6 +999,11 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         quality_issues=final_quality_issues,
     )
     if final_issues or final_quality_issues:
+        action_notice(
+            f"report_stage case={brief.case_name} stage=final_validation_failed length={chinese_length(article_text(article))} "
+            f"hard={len(final_issues)} quality={len(final_quality_issues)} hard_sample={';'.join(final_issues[:2])[:260]} "
+            f"quality_sample={';'.join(final_quality_issues[:2])[:260]}"
+        )
         LOGGER.warning("Report still has validation/quality issues after narrative pipeline: %s hard=%s quality=%s", brief.case_name, final_issues, final_quality_issues)
         if os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") == "1":
             action_notice(
@@ -985,5 +1015,6 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
             return enforce_hard_length(article, brief, stage="validation_failed_return")
         raise RuntimeError(f"Report quality validation failed for {brief.case_name}: hard={final_issues} quality={final_quality_issues}")
     else:
+        action_notice(f"report_stage case={brief.case_name} stage=final_validation_passed length={chinese_length(article_text(article))}")
         LOGGER.info("Report passed hard validation and quality checks: %s length=%s", brief.case_name, chinese_length(article_text(article)))
     return enforce_hard_length(article, brief, stage="final_return")

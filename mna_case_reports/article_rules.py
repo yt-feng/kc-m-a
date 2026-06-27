@@ -110,6 +110,14 @@ def compact_name(value: str) -> str:
 def name_aliases(name: str) -> set[str]:
     compact = compact_name(name)
     aliases = {name, compact}
+    suffix_only = re.sub(
+        r"(股份有限公司|有限责任公司|有限公司|公司)$",
+        "",
+        name or "",
+        flags=re.I,
+    ).strip()
+    if suffix_only:
+        aliases.add(suffix_only)
     for part in re.split(r"[、,，/和及与]+", compact):
         part = part.strip()
         if len(part) >= 3:
@@ -119,6 +127,11 @@ def name_aliases(name: str) -> set[str]:
         if location_stripped.startswith(prefix) and len(location_stripped) - len(prefix) >= 3:
             location_stripped = location_stripped[len(prefix):]
             aliases.add(location_stripped)
+            break
+    suffix_location_stripped = suffix_only
+    for prefix in LOCATION_PREFIXES:
+        if suffix_location_stripped.startswith(prefix) and len(suffix_location_stripped) - len(prefix) >= 3:
+            aliases.add(suffix_location_stripped[len(prefix):])
             break
     for base in {compact, location_stripped}:
         shortened = base

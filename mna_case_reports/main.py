@@ -25,6 +25,7 @@ from .case_selection import (
     extended_pool_briefs,
     is_report_completed_candidate,
     is_report_ready_candidate,
+    is_report_source_linked_completed_candidate,
     is_report_source_ready_candidate,
     lightweight_weekly_candidates,
     raw_items_from_latest_weekly_workbook,
@@ -269,11 +270,14 @@ def should_try_candidate(brief: CaseBrief, *, written_briefs: list[CaseBrief], r
 def candidate_readiness_counts(briefs: list[CaseBrief]) -> dict[str, int]:
     ready = [brief for brief in briefs if is_report_ready_candidate(brief)]
     source_ready = [brief for brief in ready if is_report_source_ready_candidate(brief)]
+    source_linked_completed = [brief for brief in briefs if is_report_source_linked_completed_candidate(brief)]
     return {
         "total": len(briefs),
         "completed": sum(1 for brief in briefs if is_report_completed_candidate(brief)),
         "ready": len(ready),
         "source_ready": len(source_ready),
+        "source_linked_completed": len(source_linked_completed),
+        "weak_source_linked_completed": sum(1 for brief in source_linked_completed if not is_report_ready_candidate(brief)),
         "domestic_ready": sum(1 for brief in ready if brief.is_domestic),
         "domestic_source_ready": sum(1 for brief in source_ready if brief.is_domestic),
     }
@@ -325,7 +329,8 @@ def main() -> None:
         )
         action_notice(
             f"candidate_pool_stage=excel_structured_done total={counts['total']} completed={counts['completed']} ready={counts['ready']} "
-            f"source_ready={counts['source_ready']} domestic_source_ready={counts['domestic_source_ready']}"
+            f"source_ready={counts['source_ready']} source_linked_completed={counts['source_linked_completed']} "
+            f"weak_source_linked_completed={counts['weak_source_linked_completed']} domestic_source_ready={counts['domestic_source_ready']}"
         )
         if counts["ready"] < ready_buffer_count or counts["source_ready"] < ready_buffer_count or counts["domestic_source_ready"] < required_domestic:
             LOGGER.info("Summarizing raw candidates from latest weekly Excel because completed source-ready pool is below the ready buffer")
@@ -340,7 +345,8 @@ def main() -> None:
             counts = candidate_readiness_counts(briefs)
             action_notice(
                 f"candidate_pool_stage=excel_raw_pool_updated total={counts['total']} completed={counts['completed']} "
-                f"ready={counts['ready']} domestic_source_ready={counts['domestic_source_ready']}"
+                f"ready={counts['ready']} source_ready={counts['source_ready']} source_linked_completed={counts['source_linked_completed']} "
+                f"weak_source_linked_completed={counts['weak_source_linked_completed']} domestic_source_ready={counts['domestic_source_ready']}"
             )
         if counts["ready"] < ready_buffer_count or counts["source_ready"] < ready_buffer_count or counts["domestic_source_ready"] < required_domestic:
             LOGGER.info("Collecting live weekly report candidates because completed source-ready pool is below the ready buffer")
@@ -363,7 +369,8 @@ def main() -> None:
             counts = candidate_readiness_counts(briefs)
             action_notice(
                 f"candidate_pool_stage=completed_fallback_pool_updated total={counts['total']} completed={counts['completed']} "
-                f"ready={counts['ready']} domestic_source_ready={counts['domestic_source_ready']}"
+                f"ready={counts['ready']} source_ready={counts['source_ready']} source_linked_completed={counts['source_linked_completed']} "
+                f"weak_source_linked_completed={counts['weak_source_linked_completed']} domestic_source_ready={counts['domestic_source_ready']}"
             )
         if os.getenv("REPORT_ALLOW_STATIC_WEEKLY_POOL", "0") == "1":
             LOGGER.info("Static weekly report pool is explicitly enabled")
@@ -381,6 +388,12 @@ def main() -> None:
     )
     selected = selected_all[args.offset :]
     action_notice("selected_candidates=" + " | ".join(f"{idx+1}.{brief.case_name}" for idx, brief in enumerate(selected[:max_attempts])))
+    for idx, brief in enumerate(selected[:max_attempts], start=1):
+        action_notice(
+            f"selected_candidate_detail index={idx} ready={is_report_ready_candidate(brief)} "
+            f"source_ready={is_report_source_ready_candidate(brief)} source_linked_completed={is_report_source_linked_completed_candidate(brief)} "
+            f"completed={is_report_completed_candidate(brief)} domestic={brief.is_domestic} case={brief.case_name} url={brief.source_url[:160]}"
+        )
     effective_min_domestic = min(args.min_domestic, sum(1 for brief in selected if brief.is_domestic))
     if effective_min_domestic < args.min_domestic:
         LOGGER.info("Lowering domestic quota for this run because selected candidate pool has only %s domestic candidates", effective_min_domestic)
@@ -404,9 +417,16 @@ def main() -> None:
             continue
         attempted += 1
         if not is_report_ready_candidate(brief):
+            allow_weak_source_candidate = (
+                os.getenv("REPORT_ALLOW_WEAK_SOURCE_CANDIDATES", "0") == "1"
+                and is_report_source_linked_completed_candidate(brief)
+            )
             if allow_weak_single_candidate:
                 LOGGER.info("Proceeding with weak single-report candidate because smoke-test override is enabled: %s [%s]", brief.case_name, brief.category)
                 action_notice(f"candidate_weak_override attempt={attempted} case={brief.case_name}")
+            elif allow_weak_source_candidate:
+                LOGGER.info("Proceeding with weak source-linked completed candidate because ready pool is thin: %s [%s]", brief.case_name, brief.category)
+                action_notice(f"candidate_weak_source_attempt attempt={attempted} case={brief.case_name} url={brief.source_url[:160]}")
             else:
                 LOGGER.info("Skipping report candidate before research because preflight is weak: %s [%s]", brief.case_name, brief.category)
                 action_notice(f"candidate_skip_preflight attempt={attempted} case={brief.case_name}")
@@ -487,6 +507,14 @@ def main() -> None:
     if incomplete_written:
         raise RuntimeError("Generated reports include incomplete transactions: " + "；".join(incomplete_written))
     if len(written) < args.count and env_flag("REPORT_REQUIRE_FULL_COUNT", default=True):
+        failure_summary = " | ".join(
+            f"{item.get('case_name', '-')}: {str(item.get('error', '-'))[:220]}"
+            for item in failures[-8:]
+        )
+        action_notice(
+            f"report_batch_failed written={len(written)}/{args.count} attempted={attempted} "
+            f"candidate_count={len(selected)} failures={failure_summary}"
+        )
         raise RuntimeError(
             f"Generated {len(written)}/{args.count} completed reports; "
             "strict architecture gates rejected the remaining candidates."

@@ -336,6 +336,16 @@ def is_report_source_ready_candidate(brief: CaseBrief) -> bool:
     return is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url)
 
 
+def is_report_source_linked_completed_candidate(brief: CaseBrief) -> bool:
+    return (
+        has_explicit_parties(brief)
+        and is_report_completed_candidate(brief)
+        and has_usable_source_url(brief.source_url)
+        and brief.is_allowed_topic()
+        and not is_excluded_case(brief)
+    )
+
+
 def has_rich_disclosure_signal(brief: CaseBrief) -> bool:
     text = "\n".join([brief.source_title, brief.why, brief.deal_status, brief.source_url])
     return any(token in text for token in RICH_DISCLOSURE_HINTS)
@@ -1071,53 +1081,69 @@ def completion_briefs_from_raw_items(raw_items: list[RawItem], target_count: int
 def summarize_raw_items(raw_items: list[RawItem], target_count: int) -> list[CaseBrief]:
     if not raw_items:
         return []
-    sample = [item.as_dict() for item in raw_items[: min(len(raw_items), 220)]]
     exclude = "、".join(excluded_terms())
-    prompt_parts = [
-        "从候选新闻/公告中筛选适合写成并购案例分析报告的交易。",
-        f"选题规则：{TOPIC_SELECTION_RULES}",
-        "只选择已经完成交割、完成合并、完成资产过户或完成股权转让的案例；未完成交易不得输出为Word报告候选。",
-        "优先选择并购方和并购标的名称明确、交易金额、估值、股权比例或支付方式线索明确的案例。",
-        f"严禁选择并购方或标的名称包含这些模糊词的案例：{'、'.join(VAGUE_PARTY_TERMS)}。",
-        "交易主体、交易事件、完成/交割/过户时间、交易对价或股权比例和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、意向、审批中、进行中、问询阶段、终止交易和交易主体不明案例。",
-    ]
-    if exclude:
-        prompt_parts.append(f"不要选择包含这些主体或关键词的案例：{exclude}。")
-    prompt_parts.extend([
-        f"最多输出 {target_count} 个。分类只能用：{json.dumps(CATEGORIES, ensure_ascii=False)}。",
-        "source_url必须使用候选里的原始公告/媒体链接，不得使用news.google.com、news.google.com/rss/articles、bing.com/news/apiclick等聚合跳转链接；无法确认原文链接时留空。",
-        "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false,\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_motivation\":...,\"seller_motivation\":...,\"financial_highlights\":...}]}。",
-        f"候选：{json.dumps(sample, ensure_ascii=False)}",
-    ])
-    messages = [
-        {"role": "system", "content": "你是并购案例研究选题编辑。只输出 JSON。"},
-        {"role": "user", "content": "".join(prompt_parts)},
-    ]
-    try:
-        payload = chat_json(messages)
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Raw candidate summarization failed; continuing with deterministic/fallback candidates: %s", exc)
-        return []
     rows: list[dict[str, str]] = []
-    for row in payload.get("cases", []):
-        if not isinstance(row, dict):
+    max_chunks = max(1, int(os.getenv("REPORT_RAW_SUMMARY_CHUNKS", "1")))
+    chunk_size = max(40, int(os.getenv("REPORT_RAW_SUMMARY_CHUNK_SIZE", "220")))
+    max_scan = min(len(raw_items), max_chunks * chunk_size)
+    for chunk_index, start in enumerate(range(0, max_scan, chunk_size), start=1):
+        sample = [item.as_dict() for item in raw_items[start: min(start + chunk_size, len(raw_items))]]
+        if not sample:
             continue
-        case_name = str(row.get("case_name") or "").strip()
-        if not case_name:
+        LOGGER.info("Raw candidate LLM summary chunk start: chunk=%s start=%s size=%s target=%s", chunk_index, start, len(sample), target_count)
+        prompt_parts = [
+            "从候选新闻/公告中筛选适合写成并购案例分析报告的交易。",
+            f"选题规则：{TOPIC_SELECTION_RULES}",
+            "只选择已经完成交割、完成合并、完成资产过户或完成股权转让的案例；未完成交易不得输出为Word报告候选。",
+            "优先选择并购方和并购标的名称明确、交易金额、估值、股权比例或支付方式线索明确的案例。",
+            f"严禁选择并购方或标的名称包含这些模糊词的案例：{'、'.join(VAGUE_PARTY_TERMS)}。",
+            "交易主体、交易事件、完成/交割/过户时间、交易对价或股权比例和启示维度要清楚；剔除纯传闻、纯政策、纯市场评论、意向、审批中、进行中、问询阶段、终止交易和交易主体不明案例。",
+        ]
+        if exclude:
+            prompt_parts.append(f"不要选择包含这些主体或关键词的案例：{exclude}。")
+        prompt_parts.extend([
+            f"最多输出 {max(1, target_count - len(rows))} 个。分类只能用：{json.dumps(CATEGORIES, ensure_ascii=False)}。",
+            "source_url必须使用候选里的原始公告/媒体链接，不得使用news.google.com、news.google.com/rss/articles、bing.com/news/apiclick等聚合跳转链接；无法确认原文链接时留空。",
+            "输出格式：{\"cases\":[{\"case_name\":...,\"category\":...,\"region\":...,\"source_title\":...,\"source_url\":...,\"published_at\":...,\"why\":...,\"is_domestic\":true/false,\"completed_year\":\"2025或2026等\",\"is_completed\":true/false,\"is_classic\":true/false,\"acquirer\":...,\"target\":...,\"deal_value\":...,\"deal_status\":...,\"buyer_motivation\":...,\"seller_motivation\":...,\"financial_highlights\":...}]}。",
+            f"候选：{json.dumps(sample, ensure_ascii=False)}",
+        ])
+        messages = [
+            {"role": "system", "content": "你是并购案例研究选题编辑。只输出 JSON。"},
+            {"role": "user", "content": "".join(prompt_parts)},
+        ]
+        try:
+            payload = chat_json(messages)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Raw candidate summarization chunk failed; continuing with deterministic/fallback candidates: chunk=%s error=%s", chunk_index, exc)
             continue
-        completed_year = str(row.get("completed_year") or infer_completed_year(case_name, str(row.get("source_title") or ""), str(row.get("published_at") or "")))
-        inferred_completed = infer_is_completed(
-            case_name,
-            str(row.get("source_title") or ""),
-            str(row.get("why") or ""),
-            str(row.get("deal_status") or ""),
-        )
-        is_completed = parse_bool(row.get("is_completed"), default=inferred_completed)
-        if not is_completed:
-            continue
-        row["completed_year"] = completed_year
-        row["is_completed"] = str(is_completed).lower()
-        rows.append(row)  # type: ignore[arg-type]
+        accepted = 0
+        rejected = 0
+        for row in payload.get("cases", []):
+            if not isinstance(row, dict):
+                rejected += 1
+                continue
+            case_name = str(row.get("case_name") or "").strip()
+            if not case_name:
+                rejected += 1
+                continue
+            completed_year = str(row.get("completed_year") or infer_completed_year(case_name, str(row.get("source_title") or ""), str(row.get("published_at") or "")))
+            inferred_completed = infer_is_completed(
+                case_name,
+                str(row.get("source_title") or ""),
+                str(row.get("why") or ""),
+                str(row.get("deal_status") or ""),
+            )
+            is_completed = parse_bool(row.get("is_completed"), default=inferred_completed)
+            if not is_completed:
+                rejected += 1
+                continue
+            row["completed_year"] = completed_year
+            row["is_completed"] = str(is_completed).lower()
+            rows.append(row)  # type: ignore[arg-type]
+            accepted += 1
+        LOGGER.info("Raw candidate LLM summary chunk done: chunk=%s accepted=%s rejected=%s accumulated=%s", chunk_index, accepted, rejected, len(rows))
+        if len(rows) >= target_count:
+            break
     return rows_to_briefs(rows)
 
 
@@ -1163,14 +1189,33 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
     before_history_filter = len(deduped)
     deduped = [brief for brief in deduped if not any_key_in_history(case_identity_keys(brief), historical_keys)]
     LOGGER.info("Historical duplicate filter: before=%s after=%s report_root=%s", before_history_filter, len(deduped), report_root)
+    source_linked_completed_pool = [brief for brief in deduped if is_report_source_linked_completed_candidate(brief)]
     if os.getenv("REPORT_READY_ONLY", "1") == "1":
         before_ready_filter = len(deduped)
         deduped = [brief for brief in deduped if is_report_ready_candidate(brief)]
         LOGGER.info("Strict report-ready filter: before=%s after=%s", before_ready_filter, len(deduped))
     if os.getenv("REPORT_SOURCE_READY_ONLY", "1") == "1":
         before_source_filter = len(deduped)
-        deduped = [brief for brief in deduped if is_report_source_ready_candidate(brief)]
-        LOGGER.info("Strict report-source-ready filter: before=%s after=%s", before_source_filter, len(deduped))
+        source_ready = [brief for brief in deduped if is_report_source_ready_candidate(brief)]
+        if (
+            len(source_ready) < count
+            and os.getenv("REPORT_ALLOW_WEAK_SOURCE_CANDIDATES", "0") == "1"
+        ):
+            weak_source = [
+                brief for brief in source_linked_completed_pool
+                if is_report_source_linked_completed_candidate(brief) and not is_report_source_ready_candidate(brief)
+            ]
+            deduped = dedupe_briefs(source_ready + weak_source)
+            LOGGER.info(
+                "Strict source-ready pool below requested selected count; adding weak source-linked completed backups: before=%s source_ready=%s weak_source=%s after=%s",
+                before_source_filter,
+                len(source_ready),
+                len(weak_source),
+                len(deduped),
+            )
+        else:
+            deduped = source_ready
+            LOGGER.info("Strict report-source-ready filter: before=%s after=%s", before_source_filter, len(deduped))
     counts = existing_counts(report_root)
     selected: list[CaseBrief] = []
     selected_keys: set[str] = set()
