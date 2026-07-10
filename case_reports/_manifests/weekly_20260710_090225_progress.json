@@ -1,0 +1,41 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20260710_090225",
+  "requested_count": 4,
+  "candidate_count": 12,
+  "attempted_count": 9,
+  "count": 4,
+  "files": [
+    "case_reports/02_上市平台持续整合/weekly_20260710_090225_永杰新材料收购奥科宁克秦皇岛铝业有：现金支付与业务承接.docx",
+    "case_reports/09_上市公司_PE/weekly_20260710_090225_博成未来珠海投资合伙收购力芯微10%股份：控制权与治理安排.docx",
+    "case_reports/09_上市公司_PE/weekly_20260710_090225_珠海粤峤收购英集芯15.25%股：现金支付与业务承接.docx",
+    "case_reports/09_上市公司_PE/weekly_20260710_090225_元熙基金收购豪森智能7.91%股：控制权与治理安排.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "北京睿熹股权投资基金合伙企业（有限合伙）受让津荣天宇控制权股份",
+      "category": "上市公司控股权并购",
+      "error": "Report quality validation failed for 北京睿熹股权投资基金合伙企业（有限合伙）受让津荣天宇控制权股份: hard=['缺少并购方/买方购买理由，需要明确写出并购方为什么愿意买。', '交易双方基本介绍不足，需要写清并购方和标的方的主营业务、资产/产品、财务或经营规模。'] quality=['分析深度不足：需要同时展开至少三个层面，例如产业判断、交易结构、财务影响、交割承接或并购方法论意义。', '长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。']"
+    },
+    {
+      "case_name": "交运股份置入上海久事体育赛事运营管理有限公司100%股权、上海久事体育场馆有限公司100%股权、上海浦江游览集团有限公司100%股权、上海久事演艺有限公司100%股权",
+      "category": "整合一级资产+资本化",
+      "error": "Report quality validation failed for 交运股份置入上海久事体育赛事运营管理有限公司100%股权、上海久事体育场馆有限公司100%股权、上海浦江游览集团有限公司100%股权、上海久事演艺有限公司100%股权: hard=[] quality=['标题或章节标题偏媒体化、戏剧化；这些词只是风格问题示例，不要机械替换，而应重写为专业克制的交易结构、产业位置、财务影响或治理安排表述：悬疑。']"
+    },
+    {
+      "case_name": "欧菲光收购欧菲微电子（南昌）有限公司28.2461%股权",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for 欧菲光收购欧菲微电子（南昌）有限公司28.2461%股权: hard=[] quality=['长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。']"
+    },
+    {
+      "case_name": "生材集团与重庆渝富控股集团有限公司受让渝三峡ａ40.55%股份",
+      "category": "上市公司+PE",
+      "error": "DeepSeek JSON repair failed: No JSON object found: line 1 column 1 (char 0); original prefix="
+    },
+    {
+      "case_name": "余新文先生受让华盛昌5%股份",
+      "category": "上市公司+PE",
+      "error": "Report quality validation failed for 余新文先生受让华盛昌5%股份: hard=['中文字符与英文单词或数字之间不应添加空格。'] quality=[]"
+    }
+  ]
+}

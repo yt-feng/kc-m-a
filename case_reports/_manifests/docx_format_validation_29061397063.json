@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260710_090225_永杰新材料收购奥科宁克秦皇岛铝业有：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260710_090225_元熙基金收购豪森智能7.91%股：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 4,
+      "body_count": 11,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260710_090225_博成未来珠海投资合伙收购力芯微10%股份：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260710_090225_珠海粤峤收购英集芯15.25%股：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    }
+  ]
+}
