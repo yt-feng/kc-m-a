@@ -101,6 +101,7 @@ jobs:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_MODEL: deepseek-v4-flash
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       REPORT_ARTICLE_API_KEY: ${{ secrets.RKAPI_API_KEY }}
       REPORT_ARTICLE_MODEL_PROVIDER: ${{ github.event.inputs.article_model_provider || vars.REPORT_ARTICLE_MODEL_PROVIDER || 'deepseek-pro' }}
       REPORT_ARTICLE_BASE_URL: ${{ vars.REPORT_ARTICLE_BASE_URL || 'https://rkapi.com/v1' }}
@@ -120,6 +121,11 @@ jobs:
       REPORT_WEEKLY_WORKBOOK_LOOKBACK: "12"
       REPORT_DISCOVERY_LOOKBACK_DAYS: "120"
       REPORT_RAW_COMPLETION_PDF_MAX: "160"
+      REPORT_ENABLE_TAVILY: "1"
+      REPORT_TAVILY_MAX_QUERIES: "10"
+      REPORT_TAVILY_RESULTS_PER_QUERY: "8"
+      REPORT_TAVILY_SEARCH_DEPTH: "basic"
+      REPORT_TAVILY_TOPIC: "general"
       REPORT_CONTINUE_ON_ERROR: "1"
       REPORT_READY_BUFFER_COUNT: "8"
       REPORT_SOURCE_READY_ONLY: "1"
