@@ -27,6 +27,7 @@ BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 VAGUE_PARTY_TERMS = (
     "未披露", "未知", "不详", "待定", "某标的", "标的资产", "标的公司", "相关资产", "部分资产",
     "旗下资产", "金融资产", "相关股权", "受让方", "转让方", "未具名", "控股子公司",
+    "实施情况报告书", "相关事项", "交易对方", "交易各方", "本次交易", "本次收购",
 )
 PARTY_SUFFIX_RE = re.compile(
     r"(股份有限公司|有限责任公司|有限公司|控股集团|控股有限公司|控股|集团|公司|"
@@ -95,6 +96,16 @@ MATERIAL_SHARE_TRANSFER_HINTS = (
     "协议转让", "股份转让", "完成过户", "过户完成", "权益变动", "证券过户登记确认书",
 )
 ASSET_SWAP_HINTS = ("资产置换", "置入资产", "置出资产", "完成交割", "资产交割确认书")
+TAVILY_COMPLETION_QUERIES: tuple[str, ...] = (
+    "site:static.cninfo.com.cn 完成过户 控制权 股份转让 2026",
+    "site:static.cninfo.com.cn 标的资产 过户完成 重大资产购买 2026",
+    "site:static.cninfo.com.cn 完成交割 资产置换 股权 2026",
+    "site:hkexnews.hk acquisition completion discloseable transaction 2026",
+    "site:hkexnews.hk connected transaction acquisition completion 2026",
+    "site:sec.gov acquisition completed merger closed 2026 8-K",
+    "site:announcements.asx.com.au scheme implementation acquisition completed 2026",
+    "site:businesswire.com acquisition completed closed deal value 2026",
+)
 
 
 @dataclass
@@ -168,6 +179,19 @@ def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     if minimum is not None:
         value = max(value, minimum)
     return value
+
+
+def env_flag(name: str, *, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def source_notice(message: str) -> None:
+    safe = str(message).replace("\n", " ")[:1000]
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print(f"::notice::{safe}", flush=True)
 
 
 def clean_cell(value: object) -> str:
@@ -394,15 +418,15 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
         and not any(hint in disclosure_text for hint in NON_CONTROL_HINTS)
     )
     if (
-        brief.category == "上市公司+PE"
-        and re.search(r"\d+(?:\.\d+)?%股份", brief.case_name)
+        re.search(r"\d+(?:\.\d+)?%股份", brief.case_name)
         and not positive_control_signal
         and not re.search(r"(?:购买资产|资产置换|发行股份)", disclosure_text)
     ):
-        deal_penalty += 3
         percent_values = _percent_values(brief.case_name)
-        if percent_values and max(percent_values) < 10:
-            deal_penalty += 1
+        largest_percent = max(percent_values) if percent_values else 0
+        deal_penalty += 4
+        if largest_percent and largest_percent < 10:
+            deal_penalty += 8
     rationale_penalty = 0
     if len(clean_cell(brief.buyer_motivation or brief.why)) < 15:
         rationale_penalty += 1
@@ -468,6 +492,9 @@ def infer_parties_from_name(case_name: str) -> tuple[str, str]:
 def is_vague_party(value: str) -> bool:
     text = (value or "").strip()
     if len(text) < 2:
+        return True
+    compact = re.sub(r"[^A-Za-z0-9\u4e00-\u9fa5]", "", text).lower()
+    if compact in {"st", "xst", "sst"}:
         return True
     return any(term in text for term in VAGUE_PARTY_TERMS)
 
@@ -729,6 +756,130 @@ def candidates_from_weekly(days: int, max_items: int) -> list[RawItem]:
     return raw
 
 
+def tavily_report_queries() -> list[str]:
+    queries: list[str] = []
+    extra = os.getenv("REPORT_TAVILY_EXTRA_QUERIES", "")
+    if extra:
+        queries.extend(query.strip() for query in re.split(r"[\n]+", extra) if query.strip())
+    queries.extend(TAVILY_COMPLETION_QUERIES)
+    queries.extend(CASE_DISCOVERY_QUERIES)
+    seen: set[str] = set()
+    out: list[str] = []
+    for query in queries:
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(query)
+    return out
+
+
+def fetch_tavily_report_candidates(start: datetime, end: datetime, max_items: int) -> list[RawItem]:
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    if not api_key:
+        LOGGER.info("Tavily report discovery skipped because TAVILY_API_KEY is not configured")
+        source_notice("tavily_report_discovery_skipped reason=missing_api_key")
+        return []
+    if not env_flag("REPORT_ENABLE_TAVILY", default=True):
+        LOGGER.info("Tavily report discovery disabled by REPORT_ENABLE_TAVILY")
+        source_notice("tavily_report_discovery_skipped reason=disabled")
+        return []
+
+    try:
+        import requests
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Tavily report discovery skipped because requests import failed: %s", exc)
+        source_notice(f"tavily_report_discovery_skipped reason=requests_import_failed error={str(exc)[:200]}")
+        return []
+
+    endpoint = os.getenv("TAVILY_SEARCH_URL", "https://api.tavily.com/search").strip() or "https://api.tavily.com/search"
+    max_queries = env_int("REPORT_TAVILY_MAX_QUERIES", 10, minimum=0)
+    results_per_query = min(env_int("REPORT_TAVILY_RESULTS_PER_QUERY", 8, minimum=1), 20)
+    timeout = env_int("REPORT_TAVILY_TIMEOUT_SECONDS", 20, minimum=5)
+    search_depth = os.getenv("REPORT_TAVILY_SEARCH_DEPTH", "basic").strip() or "basic"
+    topic = os.getenv("REPORT_TAVILY_TOPIC", "general").strip() or "general"
+    include_raw = env_flag("REPORT_TAVILY_INCLUDE_RAW_CONTENT", default=False)
+
+    raw: list[RawItem] = []
+    seen: set[str] = set()
+    queries = tavily_report_queries()[:max_queries]
+    source_notice(
+        f"tavily_report_discovery_start queries={len(queries)} results_per_query={results_per_query} "
+        f"depth={search_depth} topic={topic} include_raw={include_raw}"
+    )
+    for query in queries:
+        payload = {
+            "query": query,
+            "search_depth": search_depth,
+            "max_results": results_per_query,
+            "topic": topic,
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": end.strftime("%Y-%m-%d"),
+            "include_answer": False,
+            "include_raw_content": "text" if include_raw else False,
+            "include_images": False,
+            "include_image_descriptions": False,
+            "include_favicon": False,
+            "auto_parameters": False,
+            "exact_match": False,
+            "include_usage": True,
+            "safe_search": False,
+        }
+        try:
+            response = requests.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+            if response.status_code >= 400:
+                LOGGER.warning("Tavily report discovery query failed: status=%s query=%s body=%s", response.status_code, query, response.text[:300])
+                source_notice(f"tavily_report_query_failed status={response.status_code} query={query[:160]}")
+                continue
+            data = response.json()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Tavily report discovery query failed: query=%s error=%s", query, exc)
+            source_notice(f"tavily_report_query_failed query={query[:160]} error={str(exc)[:220]}")
+            continue
+        accepted = 0
+        for result in data.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            title = clean_cell(result.get("title"))
+            url = unwrap_news_url(clean_cell(result.get("url")))
+            if not title or not is_usable_article_url(url):
+                continue
+            content = clean_cell(result.get("content"))
+            raw_content = clean_cell(result.get("raw_content")) if include_raw else ""
+            summary = " ".join(x for x in [content, raw_content[:1200]] if x).strip()
+            item = RawItem(
+                title=title,
+                url=url,
+                source_name="Tavily Search",
+                source_url="https://www.tavily.com/",
+                published_at=clean_cell(result.get("published_date") or result.get("published_at") or ""),
+                summary=summary,
+                region_hint="中国/全球",
+                query=query,
+            )
+            key = item.stable_key()
+            if key in seen:
+                continue
+            seen.add(key)
+            raw.append(item)
+            accepted += 1
+            if len(raw) >= max_items:
+                LOGGER.info("Tavily report discovery reached cap=%s", max_items)
+                source_notice(f"tavily_report_discovery_cap reached={len(raw)} cap={max_items}")
+                return sorted(raw, key=raw_report_item_score, reverse=True)
+        usage = data.get("usage") if isinstance(data, dict) else None
+        LOGGER.info("Tavily report discovery query done: query=%s accepted=%s usage=%s", query, accepted, usage or "-")
+        source_notice(f"tavily_report_query_done accepted={accepted} total={len(raw)} query={query[:160]}")
+    LOGGER.info("Tavily report discovery collected=%s queries=%s", len(raw), len(queries))
+    source_notice(f"tavily_report_discovery_done collected={len(raw)} queries={len(queries)}")
+    return sorted(raw, key=raw_report_item_score, reverse=True)
+
+
 def lightweight_weekly_candidates(days: int, max_items: int) -> list[RawItem]:
     end = datetime.now(BEIJING_TZ).replace(microsecond=0)
     start = end - timedelta(days=days)
@@ -746,8 +897,16 @@ def lightweight_weekly_candidates(days: int, max_items: int) -> list[RawItem]:
                 continue
             seen.add(key)
             raw.append(item)
+    tavily_items = fetch_tavily_report_candidates(start, end, max_items=max_items)
+    for item in tavily_items:
+        key = item.stable_key()
+        if key in seen:
+            continue
+        seen.add(key)
+        raw.append(item)
     raw = sorted(raw, key=raw_report_item_score, reverse=True)
-    LOGGER.info("Lightweight weekly report candidates collected=%s returning=%s", len(raw), min(len(raw), max_items))
+    LOGGER.info("Lightweight weekly report candidates collected=%s tavily=%s returning=%s", len(raw), len(tavily_items), min(len(raw), max_items))
+    source_notice(f"lightweight_report_discovery_done collected={len(raw)} tavily={len(tavily_items)} returning={min(len(raw), max_items)}")
     return raw[:max_items]
 
 
