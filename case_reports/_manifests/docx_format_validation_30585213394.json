@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260731_055621_广州瑞立科密汽车电子收购武汉瑞立科德斯汽车电：股权比例与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260731_055621_宁夏东泰能源集团收购广西东方智造科技：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260731_055621_杭州拼便宜网络科技收购嘉亨家化：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260731_055621_赵铭及百年勤书收购爱丽家居：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    }
+  ]
+}
