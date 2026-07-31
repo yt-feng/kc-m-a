@@ -74,6 +74,8 @@ DeepSeek 输出会被限制为 JSON，并映射到 Excel 列：案例分类、�
 
 默认必须配置 `DEEPSEEK_API_KEY` 且 DeepSeek 调用成功；不会静默生成粗略 fallback 行。仅本地调试需要保底行时，可显式设置 `MNA_ALLOW_ROUGH_FALLBACK=1`。
 
+并购案例报告 workflow 会在生成、校验和提交完成后，把本次新生成的每一份 DOCX 送入 GateX 私有会员审核队列。仓库 Actions 还需配置 Secret `GATEX_GENERATION_CALLBACK_SECRET`；可选 Variable `GATEX_CALLBACK_BASE`，未设置时使用 `https://gatex.fund`。任一回调失败都会让 workflow 失败，确保报告不会漏过 GateX 审核流程。
+
 ## 手动运行
 
 ```bash
