@@ -33,6 +33,7 @@ from .case_selection import (
     save_manifest,
     seed_briefs,
     summarize_raw_items,
+    without_historical_duplicates,
 )
 from .config import CATEGORY_FOLDER_NAMES, CATEGORIES
 from .docx_writer import write_docx
@@ -272,13 +273,19 @@ def should_try_candidate(brief: CaseBrief, *, written_briefs: list[CaseBrief], r
     return True
 
 
-def candidate_readiness_counts(briefs: list[CaseBrief]) -> dict[str, int]:
-    ready = [brief for brief in briefs if is_report_ready_candidate(brief)]
+def candidate_readiness_counts(briefs: list[CaseBrief], *, report_root: Path | None = None) -> dict[str, int]:
+    available = briefs
+    historical_rejected_count = 0
+    if report_root is not None:
+        available, historical_rejected = without_historical_duplicates(briefs, report_root)
+        historical_rejected_count = len(historical_rejected)
+    ready = [brief for brief in available if is_report_ready_candidate(brief)]
     source_ready = [brief for brief in ready if is_report_source_ready_candidate(brief)]
-    source_linked_completed = [brief for brief in briefs if is_report_source_linked_completed_candidate(brief)]
+    source_linked_completed = [brief for brief in available if is_report_source_linked_completed_candidate(brief)]
     return {
-        "total": len(briefs),
-        "completed": sum(1 for brief in briefs if is_report_completed_candidate(brief)),
+        "total": len(available),
+        "historical_rejected": historical_rejected_count,
+        "completed": sum(1 for brief in available if is_report_completed_candidate(brief)),
         "ready": len(ready),
         "source_ready": len(source_ready),
         "source_linked_completed": len(source_linked_completed),
@@ -323,10 +330,11 @@ def main() -> None:
         action_notice("candidate_pool_stage=excel_structured_start")
         briefs = briefs_from_latest_weekly_workbook(Path(args.weekly_output_dir))
         required_domestic = min(args.min_domestic, args.count)
-        counts = candidate_readiness_counts(briefs)
+        counts = candidate_readiness_counts(briefs, report_root=output_root)
         LOGGER.info(
-            "Weekly Excel candidate pool: total=%s completed=%s ready=%s source_ready=%s domestic_ready=%s domestic_source_ready=%s",
+            "Weekly Excel candidate pool after history filter: total=%s historical_rejected=%s completed=%s ready=%s source_ready=%s domestic_ready=%s domestic_source_ready=%s",
             counts["total"],
+            counts["historical_rejected"],
             counts["completed"],
             counts["ready"],
             counts["source_ready"],
@@ -334,7 +342,8 @@ def main() -> None:
             counts["domestic_source_ready"],
         )
         action_notice(
-            f"candidate_pool_stage=excel_structured_done total={counts['total']} completed={counts['completed']} ready={counts['ready']} "
+            f"candidate_pool_stage=excel_structured_done total={counts['total']} historical_rejected={counts['historical_rejected']} "
+            f"completed={counts['completed']} ready={counts['ready']} "
             f"source_ready={counts['source_ready']} source_linked_completed={counts['source_linked_completed']} "
             f"weak_source_linked_completed={counts['weak_source_linked_completed']} domestic_source_ready={counts['domestic_source_ready']}"
         )
@@ -348,16 +357,25 @@ def main() -> None:
             LOGGER.info("Raw weekly Excel candidate pool: raw=%s promoted_or_summarized=%s", len(excel_raw_items), len(excel_raw_briefs))
             action_notice(f"candidate_pool_stage=excel_raw_summary_done raw={len(excel_raw_items)} summarized={len(excel_raw_briefs)}")
             briefs.extend(excel_raw_briefs)
-            counts = candidate_readiness_counts(briefs)
+            counts = candidate_readiness_counts(briefs, report_root=output_root)
             action_notice(
-                f"candidate_pool_stage=excel_raw_pool_updated total={counts['total']} completed={counts['completed']} "
+                f"candidate_pool_stage=excel_raw_pool_updated total={counts['total']} historical_rejected={counts['historical_rejected']} completed={counts['completed']} "
                 f"ready={counts['ready']} source_ready={counts['source_ready']} source_linked_completed={counts['source_linked_completed']} "
                 f"weak_source_linked_completed={counts['weak_source_linked_completed']} domestic_source_ready={counts['domestic_source_ready']}"
             )
-        if counts["ready"] < ready_buffer_count or counts["source_ready"] < ready_buffer_count or counts["domestic_source_ready"] < required_domestic:
-            LOGGER.info("Collecting live weekly report candidates because completed source-ready pool is below the ready buffer")
+        live_discovery_needed = (
+            env_flag("REPORT_ALWAYS_RUN_LIVE_DISCOVERY")
+            or counts["ready"] < ready_buffer_count
+            or counts["source_ready"] < ready_buffer_count
+            or counts["domestic_source_ready"] < required_domestic
+        )
+        if live_discovery_needed:
+            LOGGER.info("Collecting live weekly report candidates to refresh the completed source-ready pool")
             expanded_days = discovery_lookback_days(args.days)
-            action_notice(f"candidate_pool_stage=live_weekly_start days={args.days} discovery_days={expanded_days} max_items={args.max_raw_items}")
+            action_notice(
+                f"candidate_pool_stage=live_weekly_start forced={env_flag('REPORT_ALWAYS_RUN_LIVE_DISCOVERY')} "
+                f"days={args.days} discovery_days={expanded_days} max_items={args.max_raw_items}"
+            )
             raw_items = lightweight_weekly_candidates(expanded_days, args.max_raw_items)
             live_briefs = completion_briefs_from_raw_items(raw_items, target_count=max(pool_count * 4, ready_buffer_count * 3, 16))
             if len(live_briefs) < max(pool_count, args.count):
@@ -365,7 +383,13 @@ def main() -> None:
             LOGGER.info("Live weekly candidate pool: raw=%s summarized=%s", len(raw_items), len(live_briefs))
             action_notice(f"candidate_pool_stage=live_weekly_done raw={len(raw_items)} summarized={len(live_briefs)}")
             briefs.extend(live_briefs)
-            counts = candidate_readiness_counts(briefs)
+            counts = candidate_readiness_counts(briefs, report_root=output_root)
+            action_notice(
+                f"candidate_pool_stage=live_weekly_pool_updated total={counts['total']} historical_rejected={counts['historical_rejected']} "
+                f"completed={counts['completed']} ready={counts['ready']} source_ready={counts['source_ready']} "
+                f"source_linked_completed={counts['source_linked_completed']} weak_source_linked_completed={counts['weak_source_linked_completed']} "
+                f"domestic_source_ready={counts['domestic_source_ready']}"
+            )
         if counts["ready"] < ready_buffer_count or counts["source_ready"] < ready_buffer_count or counts["domestic_source_ready"] < required_domestic:
             LOGGER.info("Discovering completed fallback report candidates because weekly completed pool is below the ready buffer")
             action_notice("candidate_pool_stage=completed_fallback_start")
@@ -373,9 +397,9 @@ def main() -> None:
             LOGGER.info("Completed fallback candidate pool: candidates=%s", len(fallback_briefs))
             action_notice(f"candidate_pool_stage=completed_fallback_done candidates={len(fallback_briefs)}")
             briefs.extend(fallback_briefs)
-            counts = candidate_readiness_counts(briefs)
+            counts = candidate_readiness_counts(briefs, report_root=output_root)
             action_notice(
-                f"candidate_pool_stage=completed_fallback_pool_updated total={counts['total']} completed={counts['completed']} "
+                f"candidate_pool_stage=completed_fallback_pool_updated total={counts['total']} historical_rejected={counts['historical_rejected']} completed={counts['completed']} "
                 f"ready={counts['ready']} source_ready={counts['source_ready']} source_linked_completed={counts['source_linked_completed']} "
                 f"weak_source_linked_completed={counts['weak_source_linked_completed']} domestic_source_ready={counts['domestic_source_ready']}"
             )

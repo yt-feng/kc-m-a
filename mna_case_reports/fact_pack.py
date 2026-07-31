@@ -52,6 +52,10 @@ SHARE_COUNT_RE = re.compile(
     r"(?:要约收购股份数量为|预定收购的股份数量|预定收购股份数量|拟协议受让|拟受让|受让其持有的|股份数量为)"
     r"[^，。；:\n]{0,80}?(\d{1,3}(?:,\d{3})+|\d{6,})\s*股",
 )
+NOISY_DEAL_VALUE_HINTS = (
+    "第一节释义", "释义项指", "在本报告书中", "除非文中另有所指", "下列词语具有如下含义",
+    "信息披露义务人", "本报告书指", "以下简称", "目录", "备查文件",
+)
 
 
 @dataclass
@@ -106,6 +110,15 @@ def _is_missing_fact(value: str | None) -> bool:
 def _is_weak_disclosure_text(value: str | None) -> bool:
     text = _compact_text(value or "")
     return _is_missing_fact(text) or ("未披露" in text and len(text) < 30)
+
+
+def _is_noisy_deal_value(value: str | None) -> bool:
+    text = _compact_text(value or "")
+    if not text:
+        return True
+    if len(text) > 420:
+        return True
+    return any(hint in text for hint in NOISY_DEAL_VALUE_HINTS)
 
 
 def _research_blob(research_rows: list[dict[str, str]], *, max_chars: int = 30000) -> str:
@@ -257,19 +270,23 @@ def _deal_value_with_verified_price(value: str, research_rows: list[dict[str, st
 
 
 def _fallback_deal_value(current: str, facts: list[str], research_rows: list[dict[str, str]], *, fallback: str = "") -> str:
-    noisy_current = any(token in _compact_text(current) for token in ("释义", "本报告书", "信息披露义务人", "以下简称", "下列简称"))
+    noisy_current = _is_noisy_deal_value(current)
     current_text = _compact_text(current)
     fallback_text = _compact_text(fallback)
     if not _is_missing_fact(current) and not noisy_current and _has_payment_or_structure(current):
         return _deal_value_with_verified_price(current, research_rows)
     sentences = _candidate_sentences(_research_blob(research_rows)) + facts
-    value_sentences = [sentence for sentence in sentences if _has_transaction_quantity(sentence)]
+    value_sentences = [
+        sentence
+        for sentence in sentences
+        if _has_transaction_quantity(sentence) and not _is_noisy_deal_value(sentence)
+    ]
     value = _deal_value_with_verified_price(_best_sentence(value_sentences, DEAL_VALUE_HINTS), research_rows)
     if value:
         return value
-    if fallback_text and _has_payment_or_structure(fallback_text):
+    if fallback_text and not _is_noisy_deal_value(fallback_text) and _has_payment_or_structure(fallback_text):
         return normalize_text(fallback_text)
-    if current_text and _has_payment_or_structure(current_text):
+    if current_text and not noisy_current and _has_payment_or_structure(current_text):
         return normalize_text(current_text)
     return ""
 
@@ -390,7 +407,7 @@ def validate_fact_pack(pack: FactPack) -> list[str]:
         issues.append("缺少并购方名称。")
     if not pack.target or pack.target in {"标的", "公开披露的标的"}:
         issues.append("缺少标的方/出售方名称。")
-    if not pack.deal_value or ("未披露" in pack.deal_value and not _has_payment_or_structure(pack.deal_value)):
+    if _is_noisy_deal_value(pack.deal_value) or ("未披露" in pack.deal_value and not _has_payment_or_structure(pack.deal_value)):
         issues.append("缺少可引用的交易金额、估值或支付口径。")
     if len(pack.timeline) < 1 and not any(token in pack.deal_status for token in ("2023", "2024", "2025", "2026", "完成", "交割", "签署", "公告")):
         issues.append("缺少交易时间线。")

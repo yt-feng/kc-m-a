@@ -97,14 +97,14 @@ MATERIAL_SHARE_TRANSFER_HINTS = (
 )
 ASSET_SWAP_HINTS = ("资产置换", "置入资产", "置出资产", "完成交割", "资产交割确认书")
 TAVILY_COMPLETION_QUERIES: tuple[str, ...] = (
-    "site:static.cninfo.com.cn 完成过户 控制权 股份转让 2026",
-    "site:static.cninfo.com.cn 标的资产 过户完成 重大资产购买 2026",
-    "site:static.cninfo.com.cn 完成交割 资产置换 股权 2026",
-    "site:hkexnews.hk acquisition completion discloseable transaction 2026",
-    "site:hkexnews.hk connected transaction acquisition completion 2026",
-    "site:sec.gov acquisition completed merger closed 2026 8-K",
-    "site:announcements.asx.com.au scheme implementation acquisition completed 2026",
-    "site:businesswire.com acquisition completed closed deal value 2026",
+    "site:static.cninfo.com.cn 完成过户 控制权 股份转让",
+    "site:static.cninfo.com.cn 标的资产 过户完成 重大资产购买",
+    "site:static.cninfo.com.cn 完成交割 资产置换 股权",
+    "site:hkexnews.hk acquisition completion discloseable transaction",
+    "site:hkexnews.hk connected transaction acquisition completion",
+    "site:sec.gov acquisition completed merger closed 8-K",
+    "site:announcements.asx.com.au scheme implementation acquisition completed",
+    "site:businesswire.com acquisition completed closed deal value",
 )
 
 
@@ -1664,18 +1664,22 @@ def discover_backfill_cases(target_count: int, *, include_live: bool | None = No
     return deduped
 
 
-def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: int = 2, report_root: Path, readiness_first: bool = False) -> list[CaseBrief]:
+def without_historical_duplicates(briefs: list[CaseBrief], report_root: Path) -> tuple[list[CaseBrief], list[CaseBrief]]:
     deduped = dedupe_briefs(briefs)
     historical_keys = historical_case_keys(report_root)
-    before_history_filter = len(deduped)
-    history_kept: list[CaseBrief] = []
-    history_rejected: list[CaseBrief] = []
+    kept: list[CaseBrief] = []
+    rejected: list[CaseBrief] = []
     for brief in deduped:
         if any_key_in_history(case_identity_keys(brief), historical_keys):
-            history_rejected.append(brief)
+            rejected.append(brief)
         else:
-            history_kept.append(brief)
-    deduped = history_kept
+            kept.append(brief)
+    return kept, rejected
+
+
+def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: int = 2, report_root: Path, readiness_first: bool = False) -> list[CaseBrief]:
+    before_history_filter = len(dedupe_briefs(briefs))
+    deduped, history_rejected = without_historical_duplicates(briefs, report_root)
     LOGGER.info(
         "Historical duplicate filter: before=%s after=%s rejected=%s report_root=%s sample=%s",
         before_history_filter,

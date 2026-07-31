@@ -12,7 +12,7 @@ TARGET_MIN_CHARS = 3550
 TARGET_MAX_CHARS = 3800
 MAX_CHARS = 4000
 
-CJK = r"\u4e00-\u9fff"
+CJK = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 BANNED_INTRO_PATTERNS = ("本文", "本报告", "本文将", "本文认为", "本文分析", "以下将")
 BANNED_AUDIENCE_PATTERNS = (
     "上市公司CEO", "上市公司ceo", "上市公司的CEO", "上市公司的ceo",
@@ -224,7 +224,7 @@ def normalize_fullwidth_punctuation(text: str) -> str:
 
 def _format_number_with_commas(match: re.Match[str]) -> str:
     raw = match.group(0)
-    if len(raw) <= 4 or raw.startswith("0"):
+    if len(raw) <= 3 or raw.startswith("0"):
         return raw
     return f"{int(raw):,}"
 

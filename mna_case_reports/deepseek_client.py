@@ -20,6 +20,33 @@ class DeepSeekError(RuntimeError):
     pass
 
 
+def _action_notice(message: str) -> None:
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print(f"::notice::{str(message).replace(chr(10), ' ')[:1000]}", flush=True)
+
+
+def _json_response_attempts() -> int:
+    try:
+        configured = int(os.getenv("REPORT_JSON_RESPONSE_ATTEMPTS", "2"))
+    except ValueError:
+        configured = 2
+    return min(max(configured, 1), 4)
+
+
+def _is_retryable_chat_error(exc: Exception) -> bool:
+    if isinstance(exc, requests.RequestException):
+        return True
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "api error 408", "api error 425", "api error 429", "api error 500", "api error 502",
+            "api error 503", "api error 504", "timeout", "timed out", "connection",
+            "unexpected deepseek response shape", "unexpected response shape",
+        )
+    )
+
+
 def _strip_code_fence(text: str) -> str:
     cleaned = str(text or "").strip()
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
@@ -238,48 +265,96 @@ def chat_json(
     max_tokens_env: str | None = None,
     max_completion_tokens_env: str | None = None,
 ) -> dict[str, Any]:
-    content = _post_chat(
-        messages,
-        model=model,
-        timeout=timeout,
-        temperature=0.2,
-        api_key_env=api_key_env,
-        base_url_env=base_url_env,
-        model_env=model_env,
-        default_base_url=default_base_url,
-        default_model=default_model,
-        provider_label=provider_label,
-        reasoning_effort_env=reasoning_effort_env,
-        max_tokens_env=max_tokens_env,
-        max_completion_tokens_env=max_completion_tokens_env,
-    )
-    try:
-        return extract_json(content)
-    except Exception as first_exc:  # noqa: BLE001
-        if repair:
-            try:
-                locally_repaired = repair_json_like(content)
-                LOGGER.warning("DeepSeek returned malformed JSON; attempting local repair: %s", first_exc)
-                return _loads_object(locally_repaired)
-            except Exception as local_exc:  # noqa: BLE001
+    max_attempts = _json_response_attempts()
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        retry_messages = messages
+        if attempt > 1:
+            retry_messages = messages + [
+                {
+                    "role": "system",
+                    "content": "上一次响应为空或无法解析。请重新完成原任务，只输出一个完整、合法的JSON对象。",
+                }
+            ]
+        try:
+            content = _post_chat(
+                retry_messages,
+                model=model,
+                timeout=timeout,
+                temperature=0.2,
+                api_key_env=api_key_env,
+                base_url_env=base_url_env,
+                model_env=model_env,
+                default_base_url=default_base_url,
+                default_model=default_model,
+                provider_label=provider_label,
+                reasoning_effort_env=reasoning_effort_env,
+                max_tokens_env=max_tokens_env,
+                max_completion_tokens_env=max_completion_tokens_env,
+            )
+        except Exception as call_exc:  # noqa: BLE001
+            last_error = call_exc
+            if attempt < max_attempts and _is_retryable_chat_error(call_exc):
+                LOGGER.warning(
+                    "%s chat request failed transiently; retrying attempt=%s/%s error=%s",
+                    provider_label,
+                    attempt,
+                    max_attempts,
+                    call_exc,
+                )
+                _action_notice(
+                    f"json_request_retry provider={provider_label} attempt={attempt + 1}/{max_attempts} "
+                    f"error={str(call_exc)[:240]}"
+                )
+                continue
+            raise
+        try:
+            if not str(content or "").strip():
+                raise DeepSeekError(f"{provider_label} returned empty JSON content")
+            return extract_json(content)
+        except Exception as first_exc:  # noqa: BLE001
+            last_error = first_exc
+            if repair and str(content or "").strip():
                 try:
-                    LOGGER.warning("DeepSeek malformed JSON local repair failed; attempting model repair: %s", local_exc)
-                    return repair_json_text(
-                        content,
-                        model=model,
-                        timeout=min(timeout, 120),
-                        api_key_env=api_key_env,
-                        base_url_env=base_url_env,
-                        model_env=model_env,
-                        default_base_url=default_base_url,
-                        default_model=default_model,
-                        provider_label=provider_label,
-                        reasoning_effort_env=reasoning_effort_env,
-                        max_tokens_env=max_tokens_env,
-                        max_completion_tokens_env=max_completion_tokens_env,
-                    )
-                except Exception as repair_exc:  # noqa: BLE001
-                    snippet = content[:2000].replace("\n", " ")
-                    raise DeepSeekError(f"DeepSeek JSON repair failed: {repair_exc}; original prefix={snippet}") from repair_exc
-        snippet = content[:2000].replace("\n", " ")
-        raise DeepSeekError(f"Unexpected DeepSeek response JSON: {first_exc}; prefix={snippet}") from first_exc
+                    locally_repaired = repair_json_like(content)
+                    LOGGER.warning("%s returned malformed JSON; attempting local repair: %s", provider_label, first_exc)
+                    return _loads_object(locally_repaired)
+                except Exception as local_exc:  # noqa: BLE001
+                    try:
+                        LOGGER.warning("%s malformed JSON local repair failed; attempting model repair: %s", provider_label, local_exc)
+                        return repair_json_text(
+                            content,
+                            model=model,
+                            timeout=min(timeout, 120),
+                            api_key_env=api_key_env,
+                            base_url_env=base_url_env,
+                            model_env=model_env,
+                            default_base_url=default_base_url,
+                            default_model=default_model,
+                            provider_label=provider_label,
+                            reasoning_effort_env=reasoning_effort_env,
+                            max_tokens_env=max_tokens_env,
+                            max_completion_tokens_env=max_completion_tokens_env,
+                        )
+                    except Exception as repair_exc:  # noqa: BLE001
+                        last_error = repair_exc
+            if attempt < max_attempts:
+                LOGGER.warning(
+                    "%s JSON response unusable; retrying original task attempt=%s/%s content_chars=%s error=%s",
+                    provider_label,
+                    attempt,
+                    max_attempts,
+                    len(str(content or "")),
+                    last_error,
+                )
+                _action_notice(
+                    f"json_response_retry provider={provider_label} attempt={attempt + 1}/{max_attempts} "
+                    f"content_chars={len(str(content or ''))} error={str(last_error)[:240]}"
+                )
+                continue
+            snippet = str(content or "")[:2000].replace("\n", " ")
+            raise DeepSeekError(
+                f"{provider_label} JSON response failed after {max_attempts} attempt(s): "
+                f"{last_error}; original prefix={snippet}"
+            ) from last_error
+    raise DeepSeekError(f"{provider_label} JSON response failed: {last_error}")

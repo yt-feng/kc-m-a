@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from .article_quality import assess_quality
+from .article_rules import CJK, UNFORMATTED_QUANTITY_RE, section_concreteness_score
 from .article_rules_extra import (
     MAX_CHARS,
     MIN_CHARS,
@@ -727,6 +728,73 @@ def _repair_section_headings(article: dict[str, object], brief: CaseBrief, fact_
             sec["heading"] = f"{cn_number(index)}、{replacements[min(index - 1, len(replacements) - 1)]}"
 
 
+def _ensure_section_fact_anchors(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> None:
+    sections = article.get("sections")
+    if not isinstance(sections, list):
+        return
+    acquirer = brief.acquirer or fact_pack.acquirer or "收购方"
+    target = brief.target or fact_pack.target or "标的方"
+    fact_values = _clean_fact_values(
+        [fact_pack.deal_value, fact_pack.deal_status] + list(fact_pack.timeline or []) + list(fact_pack.key_numbers or []),
+        limit=4,
+    )
+    fact_anchor = fact_values or "公开资料披露的支付方式、控制权和交割安排"
+    opening_templates = (
+        "本节判断以{acquirer}与{target}的公开交易事实为边界：{facts}。对价、支付、控制权、交割和治理安排需在同一披露链条中核验。",
+        "回到{acquirer}与{target}本案，可复核的金额、比例或时间线包括：{facts}。产业、客户和资产判断均以这些公开事实为基础。",
+        "就{acquirer}收购{target}而言，本节使用的事实锚点为：{facts}。估值、条款、并表和交割承接不能脱离该披露口径。",
+    )
+    total = len(sections)
+    for index, sec in enumerate(sections):
+        if not isinstance(sec, dict):
+            continue
+        paragraphs = sec.get("paragraphs")
+        if not isinstance(paragraphs, list) or not paragraphs:
+            continue
+        heading = str(sec.get("heading") or "")
+        sec_text = heading + "\n" + "\n".join(str(p) for p in paragraphs)
+        required_score = 3 if index == total - 1 else 2
+        if section_concreteness_score(sec_text, brief) >= required_score:
+            continue
+        anchor = opening_templates[index % len(opening_templates)].format(
+            acquirer=acquirer,
+            target=target,
+            facts=fact_anchor,
+        )
+        paragraphs[0] = anchor + str(paragraphs[0])
+
+
+def _validation_diagnostics(article: dict[str, object], brief: CaseBrief) -> str:
+    text = article_text(article)
+    diagnostics: list[str] = []
+
+    def add_match(label: str, match: re.Match[str] | None) -> None:
+        if match is None:
+            return
+        start = max(0, match.start() - 36)
+        end = min(len(text), match.end() + 36)
+        snippet = re.sub(r"\s+", " ", text[start:end]).strip()
+        diagnostics.append(f"{label}={snippet}")
+
+    add_match("cjk_alnum_space", re.search(rf"([{CJK}])\s+([A-Za-z0-9])|([A-Za-z0-9])\s+([{CJK}])", text))
+    add_match("unformatted_quantity", UNFORMATTED_QUANTITY_RE.search(text))
+    sections = article.get("sections") or []
+    if isinstance(sections, list):
+        low_sections: list[str] = []
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            heading = str(sec.get("heading") or "")
+            paragraphs = sec.get("paragraphs") or []
+            sec_text = heading + "\n" + "\n".join(str(p) for p in paragraphs) if isinstance(paragraphs, list) else heading
+            score = section_concreteness_score(sec_text, brief)
+            if score < 2:
+                low_sections.append(f"{heading[:32]}({score})")
+        if low_sections:
+            diagnostics.append("low_sections=" + "|".join(low_sections[:5]))
+    return ";".join(diagnostics)[:900] or "none"
+
+
 def deterministic_article_repair(article: dict[str, object], brief: CaseBrief, fact_pack: FactPack) -> dict[str, object]:
     article = postprocess_article(article, brief)
     article["title"] = _safe_article_title(brief, fact_pack)
@@ -734,6 +802,7 @@ def deterministic_article_repair(article: dict[str, object], brief: CaseBrief, f
     _ensure_fact_boundary(article, brief, fact_pack)
     _ensure_conclusion(article, brief, fact_pack)
     _repair_section_headings(article, brief, fact_pack)
+    _ensure_section_fact_anchors(article, brief, fact_pack)
     _ensure_long_analysis_paragraphs(article)
     return postprocess_article(article, brief)
 
@@ -999,10 +1068,11 @@ def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, s
         quality_issues=final_quality_issues,
     )
     if final_issues or final_quality_issues:
+        diagnostics = _validation_diagnostics(article, brief)
         action_notice(
             f"report_stage case={brief.case_name} stage=final_validation_failed length={chinese_length(article_text(article))} "
             f"hard={len(final_issues)} quality={len(final_quality_issues)} hard_sample={';'.join(final_issues[:2])[:260]} "
-            f"quality_sample={';'.join(final_quality_issues[:2])[:260]}"
+            f"quality_sample={';'.join(final_quality_issues[:2])[:260]} diagnostics={diagnostics}"
         )
         LOGGER.warning("Report still has validation/quality issues after narrative pipeline: %s hard=%s quality=%s", brief.case_name, final_issues, final_quality_issues)
         if os.getenv("REPORT_ALLOW_DRAFT_ON_VALIDATION_FAILURE", "0") == "1":
