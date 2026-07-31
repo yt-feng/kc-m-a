@@ -42,6 +42,7 @@ mna_weekly_tracker/config.py
 - `config.py`：统一维护输出列、十大案例分类、数据源配置、关键词和专题查询。
 - `sources_fixed.py`：底层采集器，负责 CNINFO、Google News RSS、Bing News RSS、Sogou Weixin、GDELT DOC 等请求、解析、去重和候选排序。
 - `sources_rich.py`：生产入口采集编排层，提供 source summary 日志、GDELT fallback 到新闻搜索、Sogou 诊断和总候选 cap。
+- Weekly Case Reports 另有 Tavily 搜索补充，用于发现已完成交易的公告、监管文件或公司新闻稿；Tavily 只做发现层，最终事实仍需回到原始公告、监管文件或公司新闻稿核验。
 - `deepseek.py`：将 raw candidates 结构化为 Excel 行；默认要求 `DEEPSEEK_API_KEY` 存在且调用成功。
 - `excel.py`：写 workbook，并把所有跟踪源和关键词写入 `跟踪信息源` sheet。
 - `main.py`：CLI orchestration，负责日期窗口、采集、结构化、写文件。

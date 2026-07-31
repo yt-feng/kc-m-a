@@ -22,6 +22,7 @@ from .case_selection import (
     choose_balanced,
     completion_briefs_from_raw_items,
     discover_backfill_cases,
+    env_int,
     extended_pool_briefs,
     is_report_completed_candidate,
     is_report_ready_candidate,
@@ -133,6 +134,10 @@ def candidate_buffer_count(requested_count: int, pool_count: int) -> int:
 
 def per_candidate_timeout_seconds() -> int:
     return int(os.getenv("REPORT_PER_CANDIDATE_TIMEOUT_SECONDS", "900"))
+
+
+def discovery_lookback_days(requested_days: int) -> int:
+    return max(requested_days, env_int("REPORT_DISCOVERY_LOOKBACK_DAYS", 120, minimum=1))
 
 
 def use_static_smoke_pool(args: argparse.Namespace, pool_count: int) -> bool:
@@ -295,7 +300,8 @@ def main() -> None:
     allow_weak_single_candidate = args.count == 1 and os.getenv("REPORT_ALLOW_WEAK_SINGLE_CANDIDATE", "0") == "1"
     action_notice(
         f"report_run_start mode={args.mode} count={args.count} min_domestic={args.min_domestic} "
-        f"pool_count={pool_count} ready_buffer={ready_buffer_count} max_attempts={max_attempts} candidate_timeout_s={candidate_timeout_seconds}"
+        f"pool_count={pool_count} ready_buffer={ready_buffer_count} discovery_days={discovery_lookback_days(args.days)} "
+        f"max_attempts={max_attempts} candidate_timeout_s={candidate_timeout_seconds}"
     )
 
     if args.mode == "backfill":
@@ -350,8 +356,9 @@ def main() -> None:
             )
         if counts["ready"] < ready_buffer_count or counts["source_ready"] < ready_buffer_count or counts["domestic_source_ready"] < required_domestic:
             LOGGER.info("Collecting live weekly report candidates because completed source-ready pool is below the ready buffer")
-            action_notice(f"candidate_pool_stage=live_weekly_start days={args.days} max_items={args.max_raw_items}")
-            raw_items = lightweight_weekly_candidates(args.days, args.max_raw_items)
+            expanded_days = discovery_lookback_days(args.days)
+            action_notice(f"candidate_pool_stage=live_weekly_start days={args.days} discovery_days={expanded_days} max_items={args.max_raw_items}")
+            raw_items = lightweight_weekly_candidates(expanded_days, args.max_raw_items)
             live_briefs = completion_briefs_from_raw_items(raw_items, target_count=max(pool_count * 4, ready_buffer_count * 3, 16))
             if len(live_briefs) < max(pool_count, args.count):
                 live_briefs.extend(summarize_raw_items(raw_items, target_count=max(pool_count * 4, ready_buffer_count * 3, 16)))
