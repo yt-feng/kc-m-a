@@ -82,6 +82,8 @@ COMPLETION_ANNOUNCEMENT_HINTS = (
 )
 CONTROL_COMPLETION_HINTS = (
     "控股股东发生变更", "控股股东变更", "控制权发生变更", "实际控制人发生变更", "成为公司控股股东",
+    "变更实际控制人", "变更控股股东", "控股股东、实际控制人发生变更", "实际控制人、控股股东",
+    "将成为上市公司控股股东", "将成为公司控股股东",
 )
 NON_CONTROL_HINTS = (
     "不会导致公司控股股东", "不会导致公司实际控制人", "不涉及要约收购", "实际控制权未发生变化",
@@ -89,6 +91,10 @@ NON_CONTROL_HINTS = (
 COMPLETION_SKIP_TITLE_HINTS = (
     "独立财务顾问", "法律意见书", "核查意见", "减值测试", "财务顾问核查",
 )
+MATERIAL_SHARE_TRANSFER_HINTS = (
+    "协议转让", "股份转让", "完成过户", "过户完成", "权益变动", "证券过户登记确认书",
+)
+ASSET_SWAP_HINTS = ("资产置换", "置入资产", "置出资产", "完成交割", "资产交割确认书")
 
 
 @dataclass
@@ -152,6 +158,16 @@ class CaseBrief:
 def excluded_terms() -> list[str]:
     raw = os.getenv("REPORT_EXCLUDE_CASE_TERMS", "")
     return [term.strip().lower() for term in re.split(r"[,，;；\n]+", raw) if term.strip()]
+
+
+def env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    if minimum is not None:
+        value = max(value, minimum)
+    return value
 
 
 def clean_cell(value: object) -> str:
@@ -373,6 +389,20 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
         deal_penalty = 1
     else:
         deal_penalty = 2 if is_authoritative_source_url(brief.source_url) else 5
+    positive_control_signal = "控制权" in brief.case_name or (
+        any(hint in disclosure_text for hint in CONTROL_COMPLETION_HINTS)
+        and not any(hint in disclosure_text for hint in NON_CONTROL_HINTS)
+    )
+    if (
+        brief.category == "上市公司+PE"
+        and re.search(r"\d+(?:\.\d+)?%股份", brief.case_name)
+        and not positive_control_signal
+        and not re.search(r"(?:购买资产|资产置换|发行股份)", disclosure_text)
+    ):
+        deal_penalty += 3
+        percent_values = _percent_values(brief.case_name)
+        if percent_values and max(percent_values) < 10:
+            deal_penalty += 1
     rationale_penalty = 0
     if len(clean_cell(brief.buyer_motivation or brief.why)) < 15:
         rationale_penalty += 1
@@ -380,6 +410,52 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
         rationale_penalty += 1
     classic_penalty = 2 if brief.is_classic else 0
     return (completed_penalty, deal_penalty, disclosure_penalty, url_penalty, rationale_penalty, classic_penalty, brief.case_name)
+
+
+def raw_report_item_score(item: RawItem) -> tuple[int, str, str]:
+    """Prioritize raw public-source items that are likely completed deal evidence."""
+    url = unwrap_news_url(item.url)
+    title_text = " ".join([item.title, item.summary, item.query])
+    score = 0
+    if is_authoritative_source_url(url):
+        score += 1000
+    if any(hint in title_text for hint in COMPLETION_ANNOUNCEMENT_HINTS):
+        score += 500
+    if any(hint in title_text for hint in CONTROL_COMPLETION_HINTS):
+        score += 220
+    if any(hint in title_text for hint in ASSET_SWAP_HINTS):
+        score += 180
+    if any(hint in title_text for hint in MATERIAL_SHARE_TRANSFER_HINTS):
+        score += 120
+    if has_completed_signal(title_text):
+        score += 120
+    if has_deal_value_signal(title_text):
+        score += 40
+    if any(hint in item.title for hint in COMPLETION_SKIP_TITLE_HINTS):
+        score -= 300
+    return score, item.published_at or "", item.title
+
+
+def report_rejection_reason(brief: CaseBrief, historical_keys: set[str] | None = None) -> str:
+    if historical_keys is not None and any_key_in_history(case_identity_keys(brief), historical_keys):
+        return "historical_duplicate"
+    if not brief.is_allowed_topic():
+        return "topic_not_recent_completed_or_classic"
+    if is_excluded_case(brief):
+        return "excluded_term"
+    if not has_explicit_parties(brief):
+        return "missing_explicit_parties"
+    if not is_report_completed_candidate(brief):
+        return "missing_completed_evidence"
+    if not has_usable_source_url(brief.source_url):
+        return "missing_usable_source_url"
+    evidence_text = "\n".join([brief.deal_value, brief.why, brief.source_title, brief.financial_highlights])
+    if not has_deal_value_signal(evidence_text) and not (
+        is_authoritative_source_url(brief.source_url)
+        and (has_detail_rich_disclosure_signal(brief) or (brief.is_completed and has_rich_disclosure_signal(brief)))
+    ):
+        return "missing_deal_terms_or_rich_disclosure"
+    return "accepted"
 
 
 def infer_parties_from_name(case_name: str) -> tuple[str, str]:
@@ -670,11 +746,9 @@ def lightweight_weekly_candidates(days: int, max_items: int) -> list[RawItem]:
                 continue
             seen.add(key)
             raw.append(item)
-            if len(raw) >= max_items:
-                LOGGER.info("Lightweight weekly report candidates reached cap=%s", max_items)
-                return raw
-    LOGGER.info("Lightweight weekly report candidates collected=%s", len(raw))
-    return raw
+    raw = sorted(raw, key=raw_report_item_score, reverse=True)
+    LOGGER.info("Lightweight weekly report candidates collected=%s returning=%s", len(raw), min(len(raw), max_items))
+    return raw[:max_items]
 
 
 def latest_weekly_workbook(output_dir: Path) -> Path | None:
@@ -685,7 +759,7 @@ def latest_weekly_workbook(output_dir: Path) -> Path | None:
 def recent_weekly_workbooks(output_dir: Path, limit: int | None = None) -> list[Path]:
     paths = sorted(output_dir.glob("并购案例一览_*.xlsx"), reverse=True)
     if limit is None:
-        limit = int(os.getenv("REPORT_WEEKLY_WORKBOOK_LOOKBACK", "4"))
+        limit = env_int("REPORT_WEEKLY_WORKBOOK_LOOKBACK", 12, minimum=1)
     return paths[: max(limit, 1)]
 
 
@@ -814,10 +888,10 @@ def raw_items_from_latest_weekly_workbook(output_dir: Path, max_items: int = 220
                 continue
             seen.add(key)
             raw_items.append(item)
-            if len(raw_items) >= max_items:
-                LOGGER.info("Loaded %s raw report candidates from %s recent weekly Excel workbooks", len(raw_items), len(workbook_paths))
-                return raw_items
-    LOGGER.info("Loaded %s raw report candidates from %s recent weekly Excel workbooks", len(raw_items), len(workbook_paths))
+    raw_items = sorted(raw_items, key=raw_report_item_score, reverse=True)
+    if len(raw_items) > max_items:
+        raw_items = raw_items[:max_items]
+    LOGGER.info("Loaded %s prioritized raw report candidates from %s recent weekly Excel workbooks", len(raw_items), len(workbook_paths))
     return raw_items
 
 
@@ -885,13 +959,17 @@ def _alias_map(text: str) -> dict[str, str]:
 
 def _clean_party_name(value: str) -> str:
     value = clean_cell(value)
+    value = re.sub(r"^(?:[一二三四五六七八九十]+[、.．]\s*)?(?:交易基本情况|本次交易的基本情况|股份过户登记的情况|其他说明)", "", value).strip()
     for marker in ("方式向", "的境内全资子公司", "境内全资子公司", "全资子公司", "向"):
         if marker in value:
             value = value.split(marker)[-1]
-    value = re.split(r"（以下简称|以下简称|（代表|代表|于20\d{2}|于\s*20\d{2}|并|，|。|；|;|、", value, maxsplit=1)[0]
+    value = re.split(r"（以下简称|以下简称|（代表|代表|及其一致行动人|承诺|于20\d{2}|于\s*20\d{2}|并|，|。|；|;|、", value, maxsplit=1)[0]
     value = value.strip(" “”\"'（）()：:")
+    if "（有限合伙" in value and "）" not in value.split("（有限合伙", 1)[-1]:
+        value = f"{value}）"
     value = re.sub(r"^[（(]?\d+[）)]", "", value).strip()
-    value = re.sub(r"^(?:公司|本公司|控股股东|实际控制人|一致行动人|自然人)", "", value).strip()
+    value = re.sub(r"^(?:与|和|同|公司|本公司|控股股东|实际控制人|一致行动人|自然人)", "", value).strip()
+    value = re.sub(r"(?:共同|进一步)$", "", value).strip()
     if re.search(r"[\u4e00-\u9fa5]", value):
         value = re.sub(r"\s+", "", value)
     return value
@@ -903,16 +981,26 @@ def _resolve_alias(name: str, aliases: dict[str, str]) -> str:
 
 
 def _extract_buyer_from_transfer(text: str, aliases: dict[str, str]) -> str:
+    text = clean_cell(text)
     patterns = (
-        r"转让给([A-Za-z0-9\u4e00-\u9fa5（）()·]{2,80}?)(?:，|。|；|,|;|股份|$)",
-        r"向([A-Za-z0-9\u4e00-\u9fa5（）()·]{2,80}?)(?:协议)?转让",
-        r"受让方[）)]?\s*([A-Za-z0-9\u4e00-\u9fa5（）()·]{2,80}?)(?:，|。|；|,|;|持有|$)",
+        r"(?:公司控股股东|公司的控股股东|控股股东)(?:由[^，。；]{1,80})?变更为([A-Za-z0-9\u4e00-\u9fa5（）()·\s]{2,100}?)(?:，|。|；|,|;|$)",
+        r"([A-Za-z0-9\u4e00-\u9fa5（）()·\s]{2,100}?)(?:将成为|成为)(?:上市公司|公司)?控股股东",
+        r"(?:转让方|控股股东|实际控制人|股东)[^。；]{0,120}?向([A-Za-z0-9\u4e00-\u9fa5（）()·\s、及其一致行动人]{2,140}?)(?:转让|协议转让)",
+        r"转让给([A-Za-z0-9\u4e00-\u9fa5（）()·\s、及其一致行动人]{2,120}?)(?:，|。|；|,|;|股份|$)",
+        r"受让方[）)]?\s*(?:为|系|：|:)\s*([A-Za-z0-9\u4e00-\u9fa5（）()·\s]{2,100}?)(?:，|。|；|,|;|$)",
+        r"与([A-Za-z0-9\u4e00-\u9fa5（）()·\s]{2,120}?)(?:签订|签署).*?(?:股份转让|股权转让)",
+        r"(?:公司实际控制人|实际控制人)[^。；]{0,60}变更为([A-Za-z0-9\u4e00-\u9fa5（）()·\s]{2,100}?)(?:，|。|；|,|;|$)",
     )
     for pattern in patterns:
         match = re.search(pattern, text[:5000])
         if match:
             buyer = _resolve_alias(match.group(1), aliases)
-            if buyer and not is_vague_party(buyer):
+            if (
+                buyer
+                and not is_vague_party(buyer)
+                and not re.search(r"^(?:其|本次|上述|公司|上市公司|在)", buyer)
+                and not re.search(r"(?:持有公司|股份协议|过户登记|转让事项|受让方|转让方|证券过户)", buyer)
+            ):
                 return buyer
     return ""
 
@@ -941,6 +1029,43 @@ def _completion_date_status(text: str, published_at: str) -> str:
             return f"{clean_cell(match.group(1))}；已完成过户/交割"
     date = (published_at or "").split("T", 1)[0]
     return f"{date}；已完成过户/交割" if date else "已完成过户/交割"
+
+
+def _percent_values(text: str) -> list[float]:
+    values: list[float] = []
+    for match in re.finditer(r"(\d+(?:\.\d+)?)\s*%", text):
+        try:
+            values.append(float(match.group(1)))
+        except ValueError:
+            continue
+    return values
+
+
+def _largest_percent_label(text: str) -> str:
+    values = _percent_values(text)
+    if not values:
+        return ""
+    value = max(values)
+    label = f"{value:g}%"
+    return label
+
+
+def _transfer_percent_label(text: str) -> str:
+    text = clean_cell(text)
+    patterns = (
+        r"(?:转让|受让)[^。；]{0,120}?占(?:公司|上市公司|总股本|公司总股本|上市公司股份总数)?[^。；]{0,30}?(\d+(?:\.\d+)?)\s*%",
+        r"(?:过户数量|过户股份数量|合计过户数量)[^。；]{0,100}?占(?:公司|上市公司|总股本|公司总股本)?[^。；]{0,30}?(\d+(?:\.\d+)?)\s*%",
+        r"(?:本次协议转让|本次股份转让|本次权益变动)[^。；]{0,160}?(\d+(?:\.\d+)?)\s*%",
+        r"(\d+(?:\.\d+)?)\s*%[^。；]{0,40}(?:股份|股权)[^。；]{0,40}(?:转让|过户|受让)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text[:7000])
+        if match:
+            try:
+                return f"{float(match.group(1)):g}%"
+            except ValueError:
+                continue
+    return ""
 
 
 def _brief_from_completed_asset_acquisition(item: RawItem, text: str, company_full: str, company_short: str, aliases: dict[str, str]) -> CaseBrief | None:
@@ -1006,15 +1131,17 @@ def _brief_from_completed_asset_acquisition(item: RawItem, text: str, company_fu
 
 
 def _brief_from_completed_control_transfer(item: RawItem, text: str, company_full: str, company_short: str, aliases: dict[str, str]) -> CaseBrief | None:
-    if not any(hint in text[:5000] for hint in CONTROL_COMPLETION_HINTS):
-        return None
-    if any(hint in text[:3000] for hint in NON_CONTROL_HINTS):
+    head = text[:7000]
+    if not any(hint in head for hint in CONTROL_COMPLETION_HINTS):
+        if not re.search(r"(?:控股股东|实际控制人)[^。；]{0,50}(?:变更为|发生变更)", head):
+            return None
+    if any(hint in head[:3000] for hint in NON_CONTROL_HINTS):
         return None
     buyer = _extract_buyer_from_transfer(text, aliases)
     target = company_full or company_short
     if not buyer or not target or is_vague_party(buyer) or is_vague_party(target):
         return None
-    deal_text = _sentences_with(text, ("转让", "过户", "控股股东", "控制权", "股", "%", "万元", "元/股"), limit=6)
+    deal_text = _sentences_with(text, ("转让", "过户", "控股股东", "实际控制人", "控制权", "表决权", "股", "%", "万元", "亿元", "元/股"), limit=8)
     terms = extract_transaction_terms(deal_text, text[:3000])
     brief = CaseBrief(
         case_name=f"{buyer}受让{company_short or target}控制权股份",
@@ -1039,33 +1166,217 @@ def _brief_from_completed_control_transfer(item: RawItem, text: str, company_ful
     return brief if is_report_ready_candidate(brief) else None
 
 
+def _brief_from_completed_asset_swap(item: RawItem, text: str, company_full: str, company_short: str, aliases: dict[str, str]) -> CaseBrief | None:
+    head = text[:7000]
+    if "资产置换" not in " ".join([item.title, head]) or not re.search(r"(?:完成交割|交割完成|资产交割确认书|工商登记手续均已完成)", head):
+        return None
+    acquirer = company_full or company_short
+    if not acquirer or is_vague_party(acquirer):
+        return None
+    target = ""
+    placed_in = re.search(r"置入的资产为(.{20,900}?)(?:置出资产|具体内容|本次交易已经|二、)", head)
+    search_area = placed_in.group(1) if placed_in else head
+    listed_stakes: list[str] = []
+    if "包含" in search_area:
+        contains_text = search_area.split("包含", 1)[-1]
+        for segment in re.split(r"[、，,]|和", contains_text):
+            if not re.search(r"100\s*%股\s*权", segment):
+                continue
+            name = re.sub(r"（?以下.{0,20}?简称.*", "", segment)
+            name = re.sub(r"100\s*%股\s*权.*", "", name)
+            name = re.sub(r"^(?:及|和|包含|持有的)", "", name).strip()
+            name = _clean_party_name(name)
+            if name and not is_vague_party(name) and name not in listed_stakes:
+                listed_stakes.append(name)
+    if listed_stakes:
+        target = "、".join(f"{name}100%股权" for name in listed_stakes[:4])
+    if not target:
+        named_stakes = re.findall(
+            r"([A-Za-z0-9\u4e00-\u9fa5（）()·]{4,90}?(?:公司|有限公司))（以下简称[“\"][^”\"]{2,20}[”\"]）\s*100\s*%股权",
+            search_area,
+        )
+        if named_stakes:
+            target = "、".join(f"{_clean_party_name(name)}100%股权" for name in named_stakes[:4])
+    if not target:
+        alias_targets = []
+        for alias, value in aliases.items():
+            if alias in {"公司", "本公司", "上市公司", "标的公司"} or len(alias) < 4:
+                continue
+            if re.search(rf"{re.escape(alias)}[^。；]{{0,25}}?100\s*%股权", search_area) and value and value not in alias_targets:
+                alias_targets.append(value)
+        if alias_targets:
+            target = "、".join(f"{name}100%股权" for name in alias_targets[:4])
+    if not target:
+        stakes = re.findall(r"([A-Za-z0-9\u4e00-\u9fa5（）()·]{2,80}?(?:公司|有限公司))[^。；]{0,20}?100\s*%股权", search_area)
+        if stakes:
+            target = "、".join(f"{_resolve_alias(name, aliases)}100%股权" for name in stakes[:4])
+    if not target:
+        fallback_alias_targets = [value for key, value in aliases.items() if any(token in key for token in ("公司", "资产", "标的"))]
+        if fallback_alias_targets:
+            target = "、".join(fallback_alias_targets[:4])
+    if not target or is_vague_party(target):
+        return None
+    deal_text = _sentences_with(text, ("资产置换", "置入", "置出", "100%股权", "完成交割", "工商登记", "合并报表"), limit=8)
+    terms = extract_transaction_terms(deal_text, head) or "资产置换；100%股权"
+    brief = CaseBrief(
+        case_name=f"{company_short or acquirer}置入{target}",
+        category="整合一级资产+资本化",
+        region=item.region_hint or "中国",
+        source_title=item.title,
+        source_url=unwrap_news_url(item.url),
+        published_at=item.published_at,
+        why=deal_text or item.title,
+        is_domestic=True,
+        is_classic=False,
+        completed_year=_excel_completed_year(item.published_at, text[:1000]),
+        is_completed=True,
+        acquirer=acquirer,
+        target=target,
+        deal_value=terms,
+        deal_status=_completion_date_status(text, item.published_at),
+        buyer_motivation=deal_text,
+        seller_motivation=deal_text,
+        financial_highlights=deal_text if has_deal_number(deal_text) else terms,
+    )
+    return brief if is_report_ready_candidate(brief) else None
+
+
+def _brief_from_completed_tender_offer(item: RawItem, text: str, company_full: str, company_short: str, aliases: dict[str, str]) -> CaseBrief | None:
+    head = text[:7000]
+    title_has_offer = "要约收购" in item.title
+    positive_offer = title_has_offer or re.search(r"(?:要约收购结果|要约收购[^。；]{0,80}(?:完成过户|过户完成|完成|期限届满))", head)
+    negative_offer = re.search(r"(?:不涉及|不触及|未触及)要约收购", head[:3000])
+    if not positive_offer or negative_offer:
+        return None
+    buyer = ""
+    title_match = re.search(r"关于(.{2,100}?)要约收购", item.title)
+    if title_match:
+        buyer = _resolve_alias(title_match.group(1), aliases)
+    if not buyer:
+        buyer = _extract_buyer_from_transfer(text, aliases)
+    target = company_full or company_short
+    if not buyer or not target or is_vague_party(buyer) or is_vague_party(target):
+        return None
+    deal_text = _sentences_with(text, ("要约收购", "完成过户", "收购结果", "股份", "股", "%", "元/股", "总价"), limit=8)
+    terms = extract_transaction_terms(deal_text, head)
+    brief = CaseBrief(
+        case_name=f"{buyer}要约收购{company_short or target}股份",
+        category="上市公司控股权并购",
+        region=item.region_hint or "中国",
+        source_title=item.title,
+        source_url=unwrap_news_url(item.url),
+        published_at=item.published_at,
+        why=deal_text or item.title,
+        is_domestic=True,
+        is_classic=False,
+        completed_year=_excel_completed_year(item.published_at, text[:1000]),
+        is_completed=True,
+        acquirer=buyer,
+        target=target,
+        deal_value=terms,
+        deal_status=_completion_date_status(text, item.published_at),
+        buyer_motivation=deal_text,
+        seller_motivation=deal_text,
+        financial_highlights=deal_text if has_deal_number(deal_text) else terms,
+    )
+    return brief if is_report_ready_candidate(brief) else None
+
+
+def _brief_from_completed_material_share_transfer(item: RawItem, text: str, company_full: str, company_short: str, aliases: dict[str, str]) -> CaseBrief | None:
+    head = text[:7000]
+    title_head = " ".join([item.title, head])
+    if not re.search(r"(?:协议转让|股份转让).{0,80}(?:完成过户|过户完成|完成过户登记|证券过户登记确认书)", title_head):
+        return None
+    buyer = _extract_buyer_from_transfer(text, aliases)
+    target_company = company_full or company_short
+    if not buyer or not target_company or is_vague_party(buyer) or is_vague_party(target_company):
+        return None
+    transfer_percent = _transfer_percent_label(head)
+    transfer_percent_value = 0.0
+    if transfer_percent:
+        try:
+            transfer_percent_value = float(transfer_percent.rstrip("%"))
+        except ValueError:
+            transfer_percent_value = 0.0
+    max_percent = transfer_percent_value or max(_percent_values(head) or [0.0])
+    has_control_change = any(hint in head for hint in CONTROL_COMPLETION_HINTS) or re.search(r"(?:控股股东|实际控制人)[^。；]{0,50}(?:变更为|发生变更)", head)
+    if max_percent < 5 and not has_control_change:
+        return None
+    deal_text = _sentences_with(
+        text,
+        ("协议转让", "股份转让", "过户", "受让", "转让价格", "总价款", "占公司", "持股", "元/股", "%", "成为公司持股"),
+        limit=8,
+    )
+    terms = extract_transaction_terms(deal_text, head)
+    percent_label = transfer_percent or _largest_percent_label(head)
+    if percent_label and percent_label not in terms:
+        terms = "；".join(x for x in [terms, f"{percent_label}股份"] if x)
+    category = "上市公司控股权并购" if has_control_change else "上市公司+PE"
+    case_target = f"{company_short or target_company}{percent_label}股份" if percent_label else f"{company_short or target_company}股份"
+    brief = CaseBrief(
+        case_name=f"{buyer}受让{case_target}",
+        category=category,
+        region=item.region_hint or "中国",
+        source_title=item.title,
+        source_url=unwrap_news_url(item.url),
+        published_at=item.published_at,
+        why=deal_text or item.title,
+        is_domestic=True,
+        is_classic=False,
+        completed_year=_excel_completed_year(item.published_at, text[:1000]),
+        is_completed=True,
+        acquirer=buyer,
+        target=case_target,
+        deal_value=terms,
+        deal_status=_completion_date_status(text, item.published_at),
+        buyer_motivation=deal_text,
+        seller_motivation=deal_text,
+        financial_highlights=deal_text if has_deal_number(deal_text) else terms,
+    )
+    return brief if is_report_ready_candidate(brief) else None
+
+
 def completion_briefs_from_raw_items(raw_items: list[RawItem], target_count: int) -> list[CaseBrief]:
     """Deterministically promote official completion announcements into report candidates."""
     briefs: list[CaseBrief] = []
     seen: set[str] = set()
-    pdf_budget = int(os.getenv("REPORT_RAW_COMPLETION_PDF_MAX", "64"))
-    for item in raw_items:
+    pdf_budget = env_int("REPORT_RAW_COMPLETION_PDF_MAX", 160, minimum=0)
+    scanned = 0
+    hinted = 0
+    official = 0
+    pdf_attempted = 0
+    pdf_completed = 0
+    promoted_by_parser: Counter[str] = Counter()
+    for item in sorted(raw_items, key=raw_report_item_score, reverse=True):
+        scanned += 1
         if len(briefs) >= target_count or pdf_budget <= 0:
             break
         title_text = " ".join([item.title, item.summary, item.query])
         if not any(hint in title_text for hint in COMPLETION_ANNOUNCEMENT_HINTS):
             continue
+        hinted += 1
         if any(hint in item.title for hint in COMPLETION_SKIP_TITLE_HINTS):
             continue
         url = unwrap_news_url(item.url)
         if not is_authoritative_source_url(url):
             continue
+        official += 1
         text = _official_pdf_text(url)
         pdf_budget -= 1
+        pdf_attempted += 1
         if not text or not has_completed_signal(" ".join([item.title, text[:1500]])):
             continue
+        pdf_completed += 1
         company_full, company_short = _extract_stock_identity(text, item.summary)
         aliases = _alias_map(text)
         candidates = [
-            _brief_from_completed_asset_acquisition(item, text, company_full, company_short, aliases),
-            _brief_from_completed_control_transfer(item, text, company_full, company_short, aliases),
+            ("asset_acquisition", _brief_from_completed_asset_acquisition(item, text, company_full, company_short, aliases)),
+            ("asset_swap", _brief_from_completed_asset_swap(item, text, company_full, company_short, aliases)),
+            ("control_transfer", _brief_from_completed_control_transfer(item, text, company_full, company_short, aliases)),
+            ("tender_offer", _brief_from_completed_tender_offer(item, text, company_full, company_short, aliases)),
+            ("material_share_transfer", _brief_from_completed_material_share_transfer(item, text, company_full, company_short, aliases)),
         ]
-        for brief in candidates:
+        for parser_name, brief in candidates:
             if not brief:
                 continue
             keys = case_identity_keys(brief) or {brief.key()}
@@ -1073,8 +1384,19 @@ def completion_briefs_from_raw_items(raw_items: list[RawItem], target_count: int
                 continue
             seen.update(keys)
             briefs.append(brief)
-            LOGGER.info("Promoted completed raw official announcement: %s", brief.case_name)
+            promoted_by_parser[parser_name] += 1
+            LOGGER.info("Promoted completed raw official announcement: parser=%s case=%s", parser_name, brief.case_name)
             break
+    LOGGER.info(
+        "Completion promotion summary: scanned=%s hinted=%s official=%s pdf_attempted=%s pdf_completed=%s promoted=%s by_parser=%s",
+        scanned,
+        hinted,
+        official,
+        pdf_attempted,
+        pdf_completed,
+        len(briefs),
+        dict(promoted_by_parser),
+    )
     return briefs
 
 
@@ -1187,16 +1509,32 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
     deduped = dedupe_briefs(briefs)
     historical_keys = historical_case_keys(report_root)
     before_history_filter = len(deduped)
-    deduped = [brief for brief in deduped if not any_key_in_history(case_identity_keys(brief), historical_keys)]
-    LOGGER.info("Historical duplicate filter: before=%s after=%s report_root=%s", before_history_filter, len(deduped), report_root)
+    history_kept: list[CaseBrief] = []
+    history_rejected: list[CaseBrief] = []
+    for brief in deduped:
+        if any_key_in_history(case_identity_keys(brief), historical_keys):
+            history_rejected.append(brief)
+        else:
+            history_kept.append(brief)
+    deduped = history_kept
+    LOGGER.info(
+        "Historical duplicate filter: before=%s after=%s rejected=%s report_root=%s sample=%s",
+        before_history_filter,
+        len(deduped),
+        len(history_rejected),
+        report_root,
+        " | ".join(brief.case_name for brief in history_rejected[:8]),
+    )
     source_linked_completed_pool = [brief for brief in deduped if is_report_source_linked_completed_candidate(brief)]
     if os.getenv("REPORT_READY_ONLY", "1") == "1":
         before_ready_filter = len(deduped)
+        ready_rejections = Counter(report_rejection_reason(brief) for brief in deduped if not is_report_ready_candidate(brief))
         deduped = [brief for brief in deduped if is_report_ready_candidate(brief)]
-        LOGGER.info("Strict report-ready filter: before=%s after=%s", before_ready_filter, len(deduped))
+        LOGGER.info("Strict report-ready filter: before=%s after=%s rejected=%s", before_ready_filter, len(deduped), dict(ready_rejections))
     if os.getenv("REPORT_SOURCE_READY_ONLY", "1") == "1":
         before_source_filter = len(deduped)
         source_ready = [brief for brief in deduped if is_report_source_ready_candidate(brief)]
+        source_rejections = Counter(report_rejection_reason(brief) for brief in deduped if not is_report_source_ready_candidate(brief))
         if (
             len(source_ready) < count
             and os.getenv("REPORT_ALLOW_WEAK_SOURCE_CANDIDATES", "0") == "1"
@@ -1207,15 +1545,16 @@ def choose_balanced(briefs: list[CaseBrief], *, count: int = 4, min_domestic: in
             ]
             deduped = dedupe_briefs(source_ready + weak_source)
             LOGGER.info(
-                "Strict source-ready pool below requested selected count; adding weak source-linked completed backups: before=%s source_ready=%s weak_source=%s after=%s",
+                "Strict source-ready pool below requested selected count; adding weak source-linked completed backups: before=%s source_ready=%s weak_source=%s after=%s rejected=%s",
                 before_source_filter,
                 len(source_ready),
                 len(weak_source),
                 len(deduped),
+                dict(source_rejections),
             )
         else:
             deduped = source_ready
-            LOGGER.info("Strict report-source-ready filter: before=%s after=%s", before_source_filter, len(deduped))
+            LOGGER.info("Strict report-source-ready filter: before=%s after=%s rejected=%s", before_source_filter, len(deduped), dict(source_rejections))
     counts = existing_counts(report_root)
     selected: list[CaseBrief] = []
     selected_keys: set[str] = set()
