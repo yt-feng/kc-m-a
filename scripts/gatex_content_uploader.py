@@ -457,7 +457,10 @@ def upload_report(
     title, summary, sections = extract_docx(docx, repo_root)
     manifest = select_manifest(manifests, source_path, repo_root)
     endpoint = f"{callback_base.rstrip('/')}/api/integrations/content/{urllib.parse.quote(key, safe='')}"
-    auth_headers = {"Authorization": f"Bearer {secret}"}
+    auth_headers = {
+        "Authorization": f"Bearer {secret}",
+        "User-Agent": "GateX-Content-Bridge/1.0",
+    }
 
     archive_headers = {
         **auth_headers,
