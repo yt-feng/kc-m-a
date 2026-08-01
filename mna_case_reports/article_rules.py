@@ -13,6 +13,10 @@ TARGET_MAX_CHARS = 3800
 MAX_CHARS = 4000
 
 CJK = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+HORIZONTAL_WHITESPACE = r"[^\S\r\n]"
+CJK_ALNUM_HORIZONTAL_SPACE_RE = re.compile(
+    rf"([{CJK}]){HORIZONTAL_WHITESPACE}+([A-Za-z0-9])|([A-Za-z0-9]){HORIZONTAL_WHITESPACE}+([{CJK}])"
+)
 BANNED_INTRO_PATTERNS = ("本文", "本报告", "本文将", "本文认为", "本文分析", "以下将")
 BANNED_AUDIENCE_PATTERNS = (
     "上市公司CEO", "上市公司ceo", "上市公司的CEO", "上市公司的ceo",
@@ -432,7 +436,7 @@ def postprocess_article(article: dict[str, object], brief: CaseBrief) -> dict[st
 
 
 def has_cjk_alnum_space(text: str) -> bool:
-    return bool(re.search(rf"([{CJK}])\s+([A-Za-z0-9])|([A-Za-z0-9])\s+([{CJK}])", text))
+    return bool(CJK_ALNUM_HORIZONTAL_SPACE_RE.search(text))
 
 
 def has_ascii_punct_near_cjk(text: str) -> bool:

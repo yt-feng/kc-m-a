@@ -24,6 +24,7 @@ from .case_selection import (
     discover_backfill_cases,
     env_int,
     extended_pool_briefs,
+    is_authoritative_source_url,
     is_report_completed_candidate,
     is_report_ready_candidate,
     is_report_source_linked_completed_candidate,
@@ -112,8 +113,8 @@ def write_progress(path: Path, payload: dict[str, object]) -> None:
 
 
 def candidate_pool_count(requested_count: int) -> int:
-    extra = int(os.getenv("REPORT_EXTRA_CANDIDATES", "8"))
-    multiplier = int(os.getenv("REPORT_CANDIDATE_MULTIPLIER", "3"))
+    extra = int(os.getenv("REPORT_EXTRA_CANDIDATES", "12"))
+    multiplier = int(os.getenv("REPORT_CANDIDATE_MULTIPLIER", "4"))
     pool = max(requested_count, requested_count + extra, requested_count * multiplier)
     cap = int(os.getenv("REPORT_CANDIDATE_POOL_MAX", "0"))
     return min(pool, cap) if cap > 0 else pool
@@ -123,7 +124,7 @@ def max_generation_attempts(requested_count: int) -> int:
     configured = int(os.getenv("REPORT_MAX_GENERATION_ATTEMPTS", "0"))
     if configured > 0:
         return configured
-    return max(requested_count + 3, requested_count * 3)
+    return max(requested_count + 6, requested_count * 4)
 
 
 def candidate_buffer_count(requested_count: int, pool_count: int) -> int:
@@ -134,7 +135,7 @@ def candidate_buffer_count(requested_count: int, pool_count: int) -> int:
 
 
 def per_candidate_timeout_seconds() -> int:
-    return int(os.getenv("REPORT_PER_CANDIDATE_TIMEOUT_SECONDS", "900"))
+    return int(os.getenv("REPORT_PER_CANDIDATE_TIMEOUT_SECONDS", "720"))
 
 
 def discovery_lookback_days(requested_days: int) -> int:
@@ -423,7 +424,8 @@ def main() -> None:
         action_notice(
             f"selected_candidate_detail index={idx} ready={is_report_ready_candidate(brief)} "
             f"source_ready={is_report_source_ready_candidate(brief)} source_linked_completed={is_report_source_linked_completed_candidate(brief)} "
-            f"completed={is_report_completed_candidate(brief)} domestic={brief.is_domestic} case={brief.case_name} url={brief.source_url[:160]}"
+            f"primary_source={is_authoritative_source_url(brief.source_url)} completed={is_report_completed_candidate(brief)} "
+            f"domestic={brief.is_domestic} case={brief.case_name} url={brief.source_url[:160]}"
         )
     effective_min_domestic = min(args.min_domestic, sum(1 for brief in selected if brief.is_domestic))
     if effective_min_domestic < args.min_domestic:

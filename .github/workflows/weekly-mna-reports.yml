@@ -42,9 +42,9 @@ on:
         required: false
         default: "0"
       candidate_timeout:
-        description: "Per-candidate timeout seconds. Use 900-1200 for long-form production drafts."
+        description: "Per-candidate timeout seconds. Production default is 720 seconds."
         required: false
-        default: "900"
+        default: "720"
       model_timeout:
         description: "Per-light-model-call timeout seconds."
         required: false
@@ -129,7 +129,9 @@ jobs:
       REPORT_TAVILY_SEARCH_DEPTH: "basic"
       REPORT_TAVILY_TOPIC: "general"
       REPORT_CONTINUE_ON_ERROR: "1"
-      REPORT_READY_BUFFER_COUNT: "12"
+      REPORT_READY_BUFFER_COUNT: "16"
+      REPORT_EXTRA_CANDIDATES: "12"
+      REPORT_CANDIDATE_MULTIPLIER: "4"
       REPORT_SOURCE_READY_ONLY: "1"
       REPORT_ALLOW_WEAK_SOURCE_CANDIDATES: "1"
       REPORT_RAW_SUMMARY_CHUNKS: "3"
@@ -140,7 +142,7 @@ jobs:
       REPORT_FINAL_REPAIR_REVISIONS: "1"
       REPORT_MAX_GENERATION_ATTEMPTS: ${{ github.event.inputs.max_attempts || '0' }}
       REPORT_CANDIDATE_POOL_MAX: ${{ github.event.inputs.candidate_pool_max || '0' }}
-      REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: ${{ github.event.inputs.candidate_timeout || '900' }}
+      REPORT_PER_CANDIDATE_TIMEOUT_SECONDS: ${{ github.event.inputs.candidate_timeout || '720' }}
       REPORT_WORKER_HEARTBEAT_SECONDS: "30"
       REPORT_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.model_timeout || '120' }}
       REPORT_ARTICLE_MODEL_TIMEOUT_SECONDS: ${{ github.event.inputs.article_model_timeout || '240' }}

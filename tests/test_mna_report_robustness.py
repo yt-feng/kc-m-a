@@ -16,9 +16,19 @@ from mna_case_reports.article_rules import (
     normalize_text,
     section_concreteness_score,
 )
-from mna_case_reports.case_selection import CaseBrief, without_historical_duplicates
-from mna_case_reports.fact_pack import FactPack, _fallback_deal_value, validate_fact_pack
-from mna_case_reports.report_generation import _ensure_section_fact_anchors
+from mna_case_reports.case_selection import (
+    CaseBrief,
+    dedupe_briefs,
+    is_authoritative_source_url,
+    is_report_source_ready_candidate,
+    without_historical_duplicates,
+)
+from mna_case_reports.fact_pack import FactPack, _fallback_deal_value, _is_authoritative, validate_fact_pack
+from mna_case_reports.report_generation import (
+    _ensure_intro_context,
+    _ensure_long_analysis_paragraphs,
+    _ensure_section_fact_anchors,
+)
 
 
 class ArticleNormalizationTests(unittest.TestCase):
@@ -33,6 +43,10 @@ class ArticleNormalizationTests(unittest.TestCase):
 
         self.assertEqual(normalized, "㐀A股")
         self.assertFalse(has_cjk_alnum_space(normalized))
+
+    def test_structural_newline_is_not_treated_as_inline_space(self) -> None:
+        self.assertFalse(has_cjk_alnum_space("一、交易完成\n2024年完成交割"))
+        self.assertTrue(has_cjk_alnum_space("交易于 2024年完成交割"))
 
 
 class JsonResponseRetryTests(unittest.TestCase):
@@ -88,8 +102,44 @@ class FactPackValidationTests(unittest.TestCase):
 
         self.assertIn("缺少可引用的交易金额、估值或支付口径。", validate_fact_pack(pack))
 
+    def test_arbitrary_pdf_is_not_authoritative_evidence(self) -> None:
+        consulting_pdf = {
+            "url": "https://kpmg.com/example/ma-market-report.pdf",
+            "source_name": "KPMG M&A report",
+            "evidence_type": "pdf_extract",
+        }
+        official_pdf = {
+            "url": "https://static.cninfo.com.cn/finalpage/2026-07-31/example.PDF",
+            "source_name": "巨潮资讯公告",
+            "evidence_type": "pdf_extract",
+        }
+
+        self.assertFalse(_is_authoritative(consulting_pdf))
+        self.assertTrue(_is_authoritative(official_pdf))
+
 
 class CandidateAndSectionTests(unittest.TestCase):
+    def _fact_pack(self, brief: CaseBrief) -> FactPack:
+        return FactPack(
+            case_name=brief.case_name,
+            category=brief.category,
+            region=brief.region,
+            acquirer=brief.acquirer,
+            target=brief.target,
+            deal_value="交易对价1,200万元",
+            deal_status="2026年7月完成交割",
+            buyer_rationale="取得控制权并整合相关业务。",
+            seller_rationale="转让方根据协议收取现金对价。",
+            financial_highlights="标的2025年收入2,500万元。",
+            timeline=["2026年7月完成交割"],
+            key_numbers=["持股比例60%"],
+            source_titles=["完成交割公告"],
+            source_refs=["[official] 完成交割公告"],
+            authoritative_source_count=1,
+            analysis_angles=["交易结构"],
+            validation_issues=[],
+        )
+
     def test_history_filter_removes_manifest_duplicate_before_counting(self) -> None:
         duplicate = CaseBrief(
             case_name="上海甲科技有限公司收购北京乙实业有限公司",
@@ -125,6 +175,123 @@ class CandidateAndSectionTests(unittest.TestCase):
         self.assertEqual([brief.case_name for brief in kept], [fresh.case_name])
         self.assertEqual([brief.case_name for brief in rejected], [duplicate.case_name])
 
+    def test_same_source_document_dedupes_differently_named_cases(self) -> None:
+        source_url = "https://static.cninfo.com.cn/finalpage/2026-07-31/one.PDF"
+        first = CaseBrief(
+            case_name="甲公司收购乙公司",
+            category="上市公司控股权并购",
+            region="中国",
+            source_url=f"{source_url}?from=search",
+            completed_year="2026",
+            is_completed=True,
+            acquirer="甲公司",
+            target="乙公司",
+        )
+        renamed = CaseBrief(
+            case_name="丙公司置入丁公司资产",
+            category="依托上市平台持续整合同类资产",
+            region="中国",
+            source_url=f"{source_url}#page=2",
+            completed_year="2026",
+            is_completed=True,
+            acquirer="丙公司",
+            target="丁公司",
+        )
+
+        self.assertEqual(dedupe_briefs([first, renamed]), [first])
+
+    def test_historical_source_url_blocks_renamed_duplicate(self) -> None:
+        source_url = "https://static.cninfo.com.cn/finalpage/2026-07-31/history.PDF"
+        historical = CaseBrief(
+            case_name="甲公司收购乙公司",
+            category="上市公司控股权并购",
+            region="中国",
+            source_url=source_url,
+            completed_year="2026",
+            is_completed=True,
+            acquirer="甲公司",
+            target="乙公司",
+        )
+        renamed = CaseBrief(
+            case_name="丙公司置入丁公司资产",
+            category="依托上市平台持续整合同类资产",
+            region="中国",
+            source_url=f"{source_url}?download=1",
+            completed_year="2026",
+            is_completed=True,
+            acquirer="丙公司",
+            target="丁公司",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifests = root / "_manifests"
+            manifests.mkdir(parents=True)
+            (manifests / "weekly.json").write_text(
+                json.dumps([historical.to_dict()], ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            kept, rejected = without_historical_duplicates([renamed], root)
+
+        self.assertEqual(kept, [])
+        self.assertEqual(rejected, [renamed])
+
+    def test_consulting_pdf_cannot_enter_primary_source_pool(self) -> None:
+        brief = CaseBrief(
+            case_name="甲公司收购乙公司",
+            category="上市公司控股权并购",
+            region="中国",
+            source_title="全球并购市场报告",
+            source_url="https://kpmg.com/example/ma-market-report.pdf",
+            why="交易已完成，交易对价为1亿元。",
+            completed_year="2026",
+            is_completed=True,
+            acquirer="甲公司",
+            target="乙公司",
+            deal_value="交易对价1亿元",
+            deal_status="2026年完成交割",
+        )
+
+        self.assertFalse(is_authoritative_source_url(brief.source_url))
+        self.assertFalse(is_report_source_ready_candidate(brief))
+        self.assertTrue(is_authoritative_source_url("https://www.businesswire.com/news/home/example"))
+        self.assertTrue(is_authoritative_source_url("https://static.cninfo.com.cn/finalpage/example.PDF"))
+        self.assertFalse(is_authoritative_source_url("https://cninfo.com.cn.example.com/fake.PDF"))
+
+    def test_intro_repair_adds_missing_transaction_objective(self) -> None:
+        brief = CaseBrief(
+            case_name="甲公司收购乙公司",
+            category="上市公司控股权并购",
+            region="中国",
+            acquirer="甲公司",
+            target="乙公司",
+        )
+        article = {"intro": "甲公司收购乙公司。交易前，双方股权结构和业务状态已经披露。"}
+
+        _ensure_intro_context(article, brief, self._fact_pack(brief))
+
+        self.assertIn("目标线索", str(article["intro"]))
+        self.assertIn("取得控制权", str(article["intro"]))
+
+    def test_short_paragraphs_accumulate_into_two_long_analysis_paragraphs(self) -> None:
+        paragraph = "交易结构与治理安排需要结合公开事实、支付条件、控制权变化和交割节点持续核验。" * 4
+        article = {
+            "sections": [
+                {"heading": "一、交易结构", "paragraphs": [paragraph] * 6},
+                {"heading": "二、交割承接", "paragraphs": [paragraph] * 3},
+                {"heading": "三、结语", "paragraphs": ["结语内容。"]},
+            ]
+        }
+
+        _ensure_long_analysis_paragraphs(article)
+
+        lengths = [
+            len("".join(str(paragraph).split()))
+            for section in article["sections"][:-1]
+            for paragraph in section["paragraphs"]
+        ]
+        self.assertGreaterEqual(sum(1 for length in lengths if length >= 260), 2)
+
     def test_generic_section_receives_source_backed_fact_anchor(self) -> None:
         brief = CaseBrief(
             case_name="上海甲科技有限公司收购北京乙实业有限公司",
@@ -133,25 +300,7 @@ class CandidateAndSectionTests(unittest.TestCase):
             acquirer="上海甲科技有限公司",
             target="北京乙实业有限公司",
         )
-        pack = FactPack(
-            case_name=brief.case_name,
-            category=brief.category,
-            region=brief.region,
-            acquirer=brief.acquirer,
-            target=brief.target,
-            deal_value="交易对价1,200万元",
-            deal_status="2026年7月完成交割",
-            buyer_rationale="取得控制权并整合相关业务。",
-            seller_rationale="转让方根据协议收取现金对价。",
-            financial_highlights="标的2025年收入2,500万元。",
-            timeline=["2026年7月完成交割"],
-            key_numbers=["持股比例60%"],
-            source_titles=["完成交割公告"],
-            source_refs=["[official] 完成交割公告"],
-            authoritative_source_count=1,
-            analysis_angles=["交易结构"],
-            validation_issues=[],
-        )
+        pack = self._fact_pack(brief)
         article = {
             "sections": [
                 {

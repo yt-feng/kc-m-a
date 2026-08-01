@@ -6,10 +6,12 @@ import re
 import urllib.parse
 from typing import Any
 
-OFFICIAL_HINTS = (
+PRIMARY_SOURCE_DOMAINS = (
     "cninfo.com.cn", "sse.com.cn", "szse.cn", "bse.cn", "neeq.com.cn", "hkexnews.hk", "sec.gov",
-    "samr.gov.cn", "csrc.gov.cn", "ndrc.gov.cn", "mofcom.gov.cn", "nasdaq.com", "nyse.com",
-    "londonstockexchange.com", "investor.", "ir.",
+    "samr.gov.cn", "csrc.gov.cn", "ndrc.gov.cn", "mofcom.gov.cn", "gov.uk", "europa.eu",
+    "asic.gov.au", "asx.com.au", "londonstockexchange.com", "nasdaq.com", "nyse.com",
+    "businesswire.com", "globenewswire.com", "prnewswire.com", "accesswire.com",
+    "pif.gov.sa", "mubadala.com", "qia.qa", "adq.ae", "aramcoventures.com", "g42.ai", "eand.com",
 )
 MEDIA_HINTS = (
     "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "caixin.com", "yicai.com", "36kr.com",
@@ -24,15 +26,23 @@ def _domain(url: str) -> str:
         return ""
 
 
+def is_primary_source_url(url: str | None) -> bool:
+    """Return whether a URL can serve as original deal evidence."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url or "").strip())
+    except ValueError:
+        return False
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return False
+    host = parsed.hostname.lower().rstrip(".")
+    if any(host == domain or host.endswith(f".{domain}") for domain in PRIMARY_SOURCE_DOMAINS):
+        return True
+    first_label = host.split(".", 1)[0]
+    return first_label in {"ir", "investor", "investors"}
+
+
 def is_official(row: dict[str, str]) -> bool:
-    domain = _domain(row.get("url") or "")
-    source_name = (row.get("source_name") or "").lower()
-    evidence_type = (row.get("evidence_type") or "").lower()
-    if any(hint in domain for hint in OFFICIAL_HINTS):
-        return True
-    if any(token in evidence_type for token in ("pdf", "filing", "announcement", "official")):
-        return True
-    return any(token in source_name for token in ("公告", "监管", "交易所", "披露", "sec", "hkex", "巨潮"))
+    return is_primary_source_url(row.get("url") or "")
 
 
 def is_media(row: dict[str, str]) -> bool:

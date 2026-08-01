@@ -10,8 +10,8 @@ import re
 import time
 from typing import Any
 
-from .article_quality import assess_quality
-from .article_rules import CJK, UNFORMATTED_QUANTITY_RE, section_concreteness_score
+from .article_quality import ORIGIN_INITIATION_TERMS, ORIGIN_OBJECTIVE_TERMS, assess_quality
+from .article_rules import CJK_ALNUM_HORIZONTAL_SPACE_RE, UNFORMATTED_QUANTITY_RE, section_concreteness_score
 from .article_rules_extra import (
     MAX_CHARS,
     MIN_CHARS,
@@ -554,12 +554,14 @@ def _ensure_intro_context(article: dict[str, object], brief: CaseBrief, fact_pac
     if not full_acquirer or not full_target:
         return
     intro = str(article.get("intro") or "")
-    if full_acquirer in intro and full_target in intro and "交易前" in intro:
+    has_objective = any(marker in intro for marker in ORIGIN_OBJECTIVE_TERMS)
+    initiation_count = sum(1 for marker in ORIGIN_INITIATION_TERMS if marker in intro)
+    if full_acquirer in intro and full_target in intro and "交易前" in intro and initiation_count >= 2 and has_objective:
         return
     trigger = "公告、协议、要约或监管披露"
     source_hint = _clean_fact_values(fact_pack.source_titles, limit=1)
     if source_hint:
-        trigger = source_hint
+        trigger = f"公告或监管披露《{source_hint}》"
     objective = fact_pack.buyer_rationale or brief.buyer_motivation or "公开资料未完整披露主观目的，需回到已披露条款理解交易目标"
     anchor = (
         f"本案例涉及{full_acquirer}收购{full_target}的交易安排。"
@@ -628,8 +630,7 @@ def _ensure_long_analysis_paragraphs(article: dict[str, object]) -> None:
                 lengths.extend(chinese_length(str(paragraph)) for paragraph in paragraphs if str(paragraph).strip())
         return lengths
 
-    lengths = paragraph_lengths()
-    long_count = sum(1 for length in lengths if length >= 260)
+    long_count = sum(1 for length in paragraph_lengths() if length >= 260)
     if long_count >= 2:
         return
     for section in sections[:-1] or sections:
@@ -644,22 +645,29 @@ def _ensure_long_analysis_paragraphs(article: dict[str, object]) -> None:
         index = 0
         while index < len(paragraphs):
             current = str(paragraphs[index] or "").strip()
-            if (
-                current
-                and chinese_length(current) < 260
-                and index + 1 < len(paragraphs)
-                and chinese_length(current + str(paragraphs[index + 1] or "")) <= 520
-            ):
-                combined = current.rstrip("。；") + "；" + str(paragraphs[index + 1] or "").strip()
-                merged.append(combined)
-                if chinese_length(combined) >= 260:
-                    long_count += 1
-                index += 2
+            if not current:
+                index += 1
                 continue
-            merged.append(current)
             if chinese_length(current) >= 260:
+                merged.append(current)
+                index += 1
+                continue
+            combined = current
+            next_index = index + 1
+            while next_index < len(paragraphs) and chinese_length(combined) < 260:
+                following = str(paragraphs[next_index] or "").strip()
+                if not following:
+                    next_index += 1
+                    continue
+                proposed = combined.rstrip("。；") + "；" + following
+                if chinese_length(proposed) > 520:
+                    break
+                combined = proposed
+                next_index += 1
+            merged.append(combined)
+            if chinese_length(combined) >= 260:
                 long_count += 1
-            index += 1
+            index = next_index
         section["paragraphs"] = [paragraph for paragraph in merged if paragraph]
 
 
@@ -776,7 +784,7 @@ def _validation_diagnostics(article: dict[str, object], brief: CaseBrief) -> str
         snippet = re.sub(r"\s+", " ", text[start:end]).strip()
         diagnostics.append(f"{label}={snippet}")
 
-    add_match("cjk_alnum_space", re.search(rf"([{CJK}])\s+([A-Za-z0-9])|([A-Za-z0-9])\s+([{CJK}])", text))
+    add_match("cjk_alnum_space", CJK_ALNUM_HORIZONTAL_SPACE_RE.search(text))
     add_match("unformatted_quantity", UNFORMATTED_QUANTITY_RE.search(text))
     sections = article.get("sections") or []
     if isinstance(sections, list):

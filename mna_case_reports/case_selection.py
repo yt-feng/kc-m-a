@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import urllib.parse
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -21,6 +22,7 @@ from mna_weekly_tracker.sources_rich import RawItem, fetch_all_candidates
 from .case_pool import EXTENDED_CASE_POOL
 from .config import CASE_DISCOVERY_QUERIES, CATEGORIES, CLASSIC_CASE_SEEDS, TOPIC_SELECTION_RULES
 from .deepseek_client import chat_json
+from .source_hierarchy import is_primary_source_url
 
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -35,20 +37,6 @@ PARTY_SUFFIX_RE = re.compile(
     re.I,
 )
 PLACEHOLDER_TEXT = {"", "-", "无", "未知", "不详", "未披露", "n/a", "na", "none", "null"}
-OFFICIAL_SOURCE_DOMAINS = (
-    "cninfo.com.cn",
-    "static.cninfo.com.cn",
-    "sse.com.cn",
-    "szse.cn",
-    "bse.cn",
-    "neeq.com.cn",
-    "hkexnews.hk",
-    "sec.gov",
-    "samr.gov.cn",
-    "csrc.gov.cn",
-    "ndrc.gov.cn",
-    "mofcom.gov.cn",
-)
 DEAL_NUMBER_RE = re.compile(
     r"\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|％|亿元|亿美元|亿港元|万港元|万元|美元|港元|元|股|股份|股权|"
     r"crore|million|billion|bn|mn)?",
@@ -339,14 +327,7 @@ def has_usable_source_url(url: str | None) -> bool:
 
 def is_authoritative_source_url(url: str | None) -> bool:
     cleaned = unwrap_news_url(clean_cell(url))
-    if not has_usable_source_url(cleaned):
-        return False
-    parsed = re.match(r"^https?://([^/?#]+)([^?#]*)", cleaned, re.I)
-    if not parsed:
-        return False
-    host = parsed.group(1).lower().replace("www.", "")
-    path = (parsed.group(2) or "").lower()
-    return path.endswith(".pdf") or any(domain in host for domain in OFFICIAL_SOURCE_DOMAINS)
+    return has_usable_source_url(cleaned) and is_primary_source_url(cleaned)
 
 
 def is_report_ready_candidate(brief: CaseBrief) -> bool:
@@ -373,14 +354,14 @@ def is_report_ready_candidate(brief: CaseBrief) -> bool:
 
 
 def is_report_source_ready_candidate(brief: CaseBrief) -> bool:
-    return is_report_ready_candidate(brief) and has_usable_source_url(brief.source_url)
+    return is_report_ready_candidate(brief) and is_authoritative_source_url(brief.source_url)
 
 
 def is_report_source_linked_completed_candidate(brief: CaseBrief) -> bool:
     return (
         has_explicit_parties(brief)
         and is_report_completed_candidate(brief)
-        and has_usable_source_url(brief.source_url)
+        and is_authoritative_source_url(brief.source_url)
         and brief.is_allowed_topic()
         and not is_excluded_case(brief)
     )
@@ -405,7 +386,12 @@ def report_candidate_priority(brief: CaseBrief) -> tuple[int, int, int, int, int
     else:
         disclosure_penalty = 1
     completed_penalty = 0 if is_report_completed_candidate(brief) else 10
-    url_penalty = 0 if has_usable_source_url(brief.source_url) else 8
+    if is_authoritative_source_url(brief.source_url):
+        url_penalty = 0
+    elif has_usable_source_url(brief.source_url):
+        url_penalty = 4
+    else:
+        url_penalty = 8
     deal_signal = has_deal_value_signal("\n".join([brief.deal_value, brief.financial_highlights, brief.why, brief.source_title]))
     if deal_signal:
         deal_penalty = 0
@@ -473,6 +459,8 @@ def report_rejection_reason(brief: CaseBrief, historical_keys: set[str] | None =
         return "missing_completed_evidence"
     if not has_usable_source_url(brief.source_url):
         return "missing_usable_source_url"
+    if not is_authoritative_source_url(brief.source_url):
+        return "source_is_not_primary_deal_evidence"
     evidence_text = "\n".join([brief.deal_value, brief.why, brief.source_title, brief.financial_highlights])
     if not has_deal_value_signal(evidence_text) and not (
         is_authoritative_source_url(brief.source_url)
@@ -532,6 +520,21 @@ def normalize_case_name_for_identity(value: str | None) -> str:
     return text[:80]
 
 
+def normalize_source_url_for_identity(value: str | None) -> str:
+    cleaned = unwrap_news_url(clean_cell(value))
+    try:
+        parsed = urllib.parse.urlsplit(cleaned)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    path = re.sub(r"/+", "/", urllib.parse.unquote(parsed.path or "")).rstrip("/")
+    if not path:
+        return ""
+    host = parsed.hostname.lower().rstrip(".")
+    return f"{host}{path}".lower()
+
+
 def case_identity_key(brief: CaseBrief) -> str:
     case_name = re.sub(r"^(?:weekly|backfill)_\d{8}_\d{6}_", "", brief.case_name or "")
     case_name_core = re.split(r"[:：]", case_name, maxsplit=1)[0]
@@ -556,6 +559,9 @@ def case_identity_keys(brief: CaseBrief) -> set[str]:
     name_key = normalize_case_name_for_identity(case_name_core)
     if name_key:
         keys.add(f"name:{name_key}")
+    source_key = normalize_source_url_for_identity(brief.source_url)
+    if source_key:
+        keys.add(f"url:{source_key}")
     return keys
 
 
@@ -574,6 +580,8 @@ def case_key_matches(left: str, right: str) -> bool:
         return identity_part_matches(left_a, right_a) and identity_part_matches(left_t, right_t)
     if left_kind == "name":
         return len(left_value) >= 6 and len(right_value) >= 6 and (left_value in right_value or right_value in left_value)
+    if left_kind == "url":
+        return left_value == right_value
     return False
 
 
@@ -680,6 +688,7 @@ def historical_case_keys(report_root: Path) -> set[str]:
                 case_name=case_name,
                 category=safe_category(row.get("category")),
                 region=str(row.get("region") or ""),
+                source_url=str(row.get("source_url") or ""),
                 acquirer=str(row.get("acquirer") or inferred_a),
                 target=str(row.get("target") or inferred_t),
             )

@@ -9,19 +9,14 @@ from __future__ import annotations
 
 import json
 import re
-import urllib.parse
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from .article_rules import extract_research_fact_lines, normalize_text, party_names_for_title
 from .case_selection import CaseBrief
 from .deepseek_client import chat_json
+from .source_hierarchy import is_primary_source_url
 
-OFFICIAL_DOMAIN_HINTS = (
-    "cninfo.com.cn", "sse.com.cn", "szse.cn", "bse.cn", "neeq.com.cn",
-    "hkexnews.hk", "sec.gov", "samr.gov.cn", "csrc.gov.cn", "ndrc.gov.cn", "mofcom.gov.cn",
-    "londonstockexchange.com", "nasdaq.com", "nyse.com",
-)
 UNKNOWN_FACT_MARKERS = ("", "-", "未披露", "公开资料未披露", "未知", "不详", "无")
 DEAL_VALUE_HINTS = (
     "交易对价", "交易金额", "收购价格", "要约收购价格", "要约价格", "价格为", "作价", "估值",
@@ -315,23 +310,9 @@ def _fallback_seller_rationale(current: str, facts: list[str], research_rows: li
     return normalize_text(_compact_text(f"{prefix}{arrangement}"))[:360]
 
 
-def _domain(url: str) -> str:
-    try:
-        return urllib.parse.urlparse(url).netloc.lower().replace("www.", "")
-    except Exception:
-        return ""
-
-
 def _is_authoritative(row: dict[str, str]) -> bool:
     url = row.get("url") or ""
-    domain = _domain(url)
-    source_name = (row.get("source_name") or "").lower()
-    evidence_type = (row.get("evidence_type") or "").lower()
-    if any(hint in domain for hint in OFFICIAL_DOMAIN_HINTS):
-        return True
-    if "pdf" in evidence_type or "official" in source_name or "公告" in source_name:
-        return True
-    return False
+    return is_primary_source_url(url)
 
 
 def _source_titles(research_rows: list[dict[str, str]], limit: int = 12) -> list[str]:
