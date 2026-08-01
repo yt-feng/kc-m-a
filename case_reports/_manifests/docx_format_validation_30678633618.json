@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260801_095041_江苏综艺收购江苏吉莱微电子：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 17,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260801_095041_甘肃蓝科石化高新装备收购中国空分工程有限公司：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 11,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260801_095041_中成瑾瑜基金收购迦南智能5.0016：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/04_重组上市_借壳_类借壳/weekly_20260801_095041_松发股份上市公司收购恒力重工100%股权：股权比例与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    }
+  ]
+}
