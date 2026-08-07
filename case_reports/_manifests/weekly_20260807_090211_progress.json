@@ -1,0 +1,21 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20260807_090211",
+  "requested_count": 4,
+  "candidate_count": 16,
+  "attempted_count": 5,
+  "count": 4,
+  "files": [
+    "case_reports/03_上市公司控股权并购/weekly_20260807_090211_上海福迅科技收购江阴江化微电子材料：控制权与治理安排.docx",
+    "case_reports/02_上市平台持续整合/weekly_20260807_090211_国家电投集团水电收购国家电投集团内水电资：现金支付与业务承接.docx",
+    "case_reports/04_重组上市_借壳_类借壳/weekly_20260807_090211_中交设计咨询集团股份收购中交公路规划设计院有：股权比例与治理安排.docx",
+    "case_reports/01_整合一级资产_资本化/weekly_20260807_090211_上海交运集团收购上海久事体育赛事运营：股权比例与治理安排.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "ST宝实重组电投新能源",
+      "category": "重组上市（借壳，含类借壳）",
+      "error": "Report quality validation failed for ST宝实重组电投新能源: hard=['正文不得出现xx%、待补充、待确认、TODO等事实占位符；资料未披露时必须直接写明未披露，已披露数字必须使用准确值。'] quality=[]"
+    }
+  ]
+}
