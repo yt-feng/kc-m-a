@@ -441,21 +441,50 @@ def read_progress_docx_paths(path: Path) -> list[Path]:
 
 
 def http_request(url: str, method: str, data: bytes, headers: dict[str, str]) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(url)
+    request_path = parsed.path or url
     for attempt in range(1, 4):
+        print(
+            f"GateX callback attempt={attempt} method={method} path={request_path} bytes={len(data)}",
+            flush=True,
+        )
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 raw = response.read()
+                print(
+                    f"GateX callback ok status={response.status} method={method} path={request_path} response_bytes={len(raw)}",
+                    flush=True,
+                )
                 return json.loads(raw.decode("utf-8")) if raw else {}
         except urllib.error.HTTPError as exc:
             detail = exc.read(4096).decode("utf-8", errors="replace")
             if exc.code not in {408, 425, 429, 500, 502, 503, 504} or attempt == 3:
-                raise RuntimeError(f"GateX returned HTTP {exc.code}: {detail}") from exc
+                raise RuntimeError(f"GateX returned HTTP {exc.code}: {detail}{gatex_error_hint(detail)}") from exc
+            print(
+                f"GateX callback retry status={exc.code} method={method} path={request_path}",
+                flush=True,
+            )
         except urllib.error.URLError as exc:
             if attempt == 3:
                 raise RuntimeError(f"GateX callback failed: {exc.reason}") from exc
+            print(
+                f"GateX callback network retry method={method} path={request_path} reason={exc.reason}",
+                flush=True,
+            )
         time.sleep(2 ** (attempt - 1))
     raise RuntimeError("GateX callback failed after retries")
+
+
+def gatex_error_hint(detail: str) -> str:
+    lowered = detail.casefold()
+    if "schema cache" in lowered and "could not find" in lowered and "column" in lowered:
+        return (
+            " | diagnosis: GateX database schema cache is missing a column expected by the deployed "
+            "review worker. Apply the matching Supabase migration, reload the PostgREST schema cache, "
+            "then rerun the GateX reimport workflow."
+        )
+    return ""
 
 
 def external_key(source_module: str, source_path: str, checksum: str) -> str:

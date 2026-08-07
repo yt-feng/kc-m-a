@@ -63,6 +63,14 @@ class GatexProgressManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "count does not match"):
                 UPLOADER.read_progress_docx_paths(path)
 
+    def test_schema_cache_error_gets_actionable_hint(self) -> None:
+        detail = '{"ok":false,"error":"Could not find the \'cover_art_direction\' column of \'report_review_items\' in the schema cache"}'
+
+        hint = UPLOADER.gatex_error_hint(detail)
+
+        self.assertIn("schema cache", hint)
+        self.assertIn("Supabase migration", hint)
+
 
 if __name__ == "__main__":
     unittest.main()

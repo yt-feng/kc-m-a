@@ -208,8 +208,11 @@ jobs:
             fi
             python -m mna_case_reports.docx_validate "${generated_docx[@]}" --write-json "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json" "${validate_args[@]}"
             find "$REPORT_OUTPUT_ROOT/_manifests" -type f -name "*.json" -newer "$RUNNER_TEMP/weekly_reports_start_marker" -print | sort > "$RUNNER_TEMP/generated_weekly_manifest_files.txt" || true
+            find "$REPORT_OUTPUT_ROOT/_manifests" -type f -name "*_progress.json" -newer "$RUNNER_TEMP/weekly_reports_start_marker" -print | sort > "$RUNNER_TEMP/generated_weekly_progress_manifests.txt" || true
             echo "Generated or overwritten manifest files in this run:"
             cat "$RUNNER_TEMP/generated_weekly_manifest_files.txt" || true
+            echo "Generated or overwritten progress manifest files in this run:"
+            cat "$RUNNER_TEMP/generated_weekly_progress_manifests.txt" || true
           else
             echo "$REPORT_OUTPUT_ROOT directory does not exist; skip DOCX validation."
             exit 1
@@ -362,9 +365,25 @@ jobs:
           GATEX_GENERATION_CALLBACK_SECRET: ${{ secrets.GATEX_GENERATION_CALLBACK_SECRET }}
         run: |
           set -euo pipefail
+          progress_list="$RUNNER_TEMP/generated_weekly_progress_manifests.txt"
+          if [ ! -f "$progress_list" ] && [ -d "$REPORT_OUTPUT_ROOT/_manifests" ] && [ -f "$RUNNER_TEMP/weekly_reports_start_marker" ]; then
+            find "$REPORT_OUTPUT_ROOT/_manifests" -type f -name "*_progress.json" -newer "$RUNNER_TEMP/weekly_reports_start_marker" -print | sort > "$progress_list" || true
+          fi
+          if [ ! -s "$progress_list" ]; then
+            echo "No current-run progress manifest found for GateX import."
+            exit 1
+          fi
+          progress_count="$(sed '/^$/d' "$progress_list" | wc -l | tr -d ' ')"
+          if [ "$progress_count" != "1" ]; then
+            echo "Expected exactly one current-run progress manifest for GateX import, found $progress_count:"
+            cat "$progress_list"
+            exit 1
+          fi
+          progress_manifest="$(sed -n '1p' "$progress_list")"
+          echo "GateX import progress manifest: $progress_manifest"
           python3 scripts/gatex_content_uploader.py \
             --source-module kc-m-a \
             --source-repo "$GITHUB_REPOSITORY" \
             --report-type "Transactions & M&A" \
-            --docx-list "$RUNNER_TEMP/generated_weekly_docx_files.txt" \
+            --progress-manifest "$progress_manifest" \
             --manifest "$REPORT_OUTPUT_ROOT/_manifests/docx_format_validation_${{ github.run_id }}.json"

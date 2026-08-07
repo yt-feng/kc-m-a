@@ -74,7 +74,7 @@ DeepSeek 输出会被限制为 JSON，并映射到 Excel 列：案例分类、�
 
 默认必须配置 `DEEPSEEK_API_KEY` 且 DeepSeek 调用成功；不会静默生成粗略 fallback 行。仅本地调试需要保底行时，可显式设置 `MNA_ALLOW_ROUGH_FALLBACK=1`。
 
-并购案例报告 workflow 会在生成、校验和提交完成后，把本次新生成的每一份 DOCX 送入 GateX 私有会员审核队列。仓库 Actions 还需配置 Secret `GATEX_GENERATION_CALLBACK_SECRET`；可选 Variable `GATEX_CALLBACK_BASE`，未设置时使用 `https://gatex.fund`。任一回调失败都会让 workflow 失败，确保报告不会漏过 GateX 审核流程。
+并购案例报告 workflow 会在生成、校验和提交完成后，按本轮 `*_progress.json` 把完整批次的 DOCX 送入 GateX 私有会员审核队列。仓库 Actions 还需配置 Secret `GATEX_GENERATION_CALLBACK_SECRET`；可选 Variable `GATEX_CALLBACK_BASE`，未设置时使用 `https://gatex.fund`。任一回调失败都会让 workflow 失败，确保报告不会漏过 GateX 审核流程；如果本轮 progress manifest 不是 `requested_count == count == files` 的完整批次，GateX 导入会拒绝执行。
 
 如果报告已经生成、校验并提交，但 GateX 末端导入失败，可手动运行 `Reimport M&A reports into GateX` workflow，并传入该批次已提交的 `case_reports/_manifests/*_progress.json`。恢复任务只接受 `requested_count == count == files` 的完整批次，不会重新生成文章，也不会导入不完整交易报告；可选传入对应的 `docx_format_validation_*.json` 保留格式校验审计信息。
 
