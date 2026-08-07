@@ -1,0 +1,59 @@
+name: Reimport M&A reports into GateX
+
+on:
+  workflow_dispatch:
+    inputs:
+      progress_manifest:
+        description: "Committed completed progress manifest under case_reports/_manifests"
+        required: true
+      validation_manifest:
+        description: "Optional committed DOCX validation manifest"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  import_reports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GATEX_CALLBACK_BASE: ${{ vars.GATEX_CALLBACK_BASE || 'https://gatex.fund' }}
+      GATEX_GENERATION_CALLBACK_SECRET: ${{ secrets.GATEX_GENERATION_CALLBACK_SECRET }}
+      PROGRESS_MANIFEST: ${{ inputs.progress_manifest }}
+      VALIDATION_MANIFEST: ${{ inputs.validation_manifest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate recovery inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$PROGRESS_MANIFEST" in
+            case_reports/_manifests/*_progress.json) ;;
+            *) echo "Invalid progress manifest path: $PROGRESS_MANIFEST"; exit 2 ;;
+          esac
+          test -f "$PROGRESS_MANIFEST"
+          if [ -n "$VALIDATION_MANIFEST" ]; then
+            case "$VALIDATION_MANIFEST" in
+              case_reports/_manifests/docx_format_validation_*.json) ;;
+              *) echo "Invalid validation manifest path: $VALIDATION_MANIFEST"; exit 2 ;;
+            esac
+            test -f "$VALIDATION_MANIFEST"
+          fi
+
+      - name: Import completed reports into GateX private review
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --source-module kc-m-a
+            --source-repo "$GITHUB_REPOSITORY"
+            --report-type "Transactions & M&A"
+            --progress-manifest "$PROGRESS_MANIFEST"
+          )
+          if [ -n "$VALIDATION_MANIFEST" ]; then
+            args+=(--manifest "$VALIDATION_MANIFEST")
+          fi
+          python3 scripts/gatex_content_uploader.py "${args[@]}"

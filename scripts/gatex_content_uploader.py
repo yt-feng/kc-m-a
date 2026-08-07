@@ -412,6 +412,34 @@ def read_path_list(path: Path) -> list[Path]:
     return [Path(line.strip()) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def read_progress_docx_paths(path: Path) -> list[Path]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Progress manifest not found: {path}")
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"Progress manifest must contain a JSON object: {path}")
+    files = data.get("files")
+    if not isinstance(files, list) or not files:
+        raise ValueError(f"Progress manifest contains no generated DOCX files: {path}")
+    if not all(isinstance(value, str) and value.strip() for value in files):
+        raise ValueError(f"Progress manifest contains an invalid DOCX path: {path}")
+    count = data.get("count")
+    requested_count = data.get("requested_count")
+    if not isinstance(count, int) or count != len(files):
+        raise ValueError(f"Progress manifest count does not match its file list: {path}")
+    if not isinstance(requested_count, int) or requested_count <= 0:
+        raise ValueError(f"Progress manifest has an invalid requested_count: {path}")
+    if count != requested_count:
+        raise ValueError(
+            f"Progress manifest is incomplete ({count}/{requested_count}); refusing GateX import: {path}"
+        )
+    paths = [Path(value.strip()) for value in files]
+    invalid = [value for value in paths if value.suffix.casefold() != ".docx"]
+    if invalid:
+        raise ValueError(f"Progress manifest contains a non-DOCX file: {invalid[0]}")
+    return paths
+
+
 def http_request(url: str, method: str, data: bytes, headers: dict[str, str]) -> dict[str, Any]:
     for attempt in range(1, 4):
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -502,6 +530,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--docx", type=Path, action="append", default=[])
     parser.add_argument("--docx-list", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--progress-manifest",
+        type=Path,
+        action="append",
+        default=[],
+        help="Import every DOCX from a completed report progress manifest.",
+    )
     parser.add_argument("--manifest", type=Path, action="append", default=[])
     parser.add_argument("--manifest-list", type=Path, action="append", default=[])
     parser.add_argument("--callback-base", default=os.getenv("GATEX_CALLBACK_BASE", "https://gatex.fund"))
@@ -519,6 +554,9 @@ def main(argv: list[str] | None = None) -> int:
     for list_path in args.docx_list:
         docx_paths.extend(read_path_list(list_path))
     manifest_paths = list(args.manifest)
+    for progress_path in args.progress_manifest:
+        docx_paths.extend(read_progress_docx_paths(progress_path))
+        manifest_paths.append(progress_path)
     for list_path in args.manifest_list:
         manifest_paths.extend(read_path_list(list_path))
     unique_docx = list(dict.fromkeys(path.resolve() for path in docx_paths))
