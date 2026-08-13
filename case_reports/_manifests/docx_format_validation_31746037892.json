@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260814_053511_东睦新材料集团收购上海富驰高科技股份有：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 18,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260814_053511_赛力斯集团收购重庆两江新区龙盛新能：股权比例与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260814_053511_交大菡源创投收购联合水务6%股份：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260814_053511_分别与富德财产保险收购亚康股份5%股份：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    }
+  ]
+}
