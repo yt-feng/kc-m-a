@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260828_130052_渤海汽车系统收购北京北汽模塑科技有限：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 17,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260828_130052_广西国控收购柳州两面针：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260828_130052_上海悦驰无疆收购中科通达9.92%股：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260828_130052_璟辉咨询收购园林股份10.35%：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    }
+  ]
+}

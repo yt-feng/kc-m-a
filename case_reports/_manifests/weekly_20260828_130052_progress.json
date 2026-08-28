@@ -1,0 +1,31 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20260828_130052",
+  "requested_count": 4,
+  "candidate_count": 16,
+  "attempted_count": 7,
+  "count": 4,
+  "files": [
+    "case_reports/03_上市公司控股权并购/weekly_20260828_130052_广西国控收购柳州两面针：控制权与治理安排.docx",
+    "case_reports/02_上市平台持续整合/weekly_20260828_130052_渤海汽车系统收购北京北汽模塑科技有限：现金支付与业务承接.docx",
+    "case_reports/09_上市公司_PE/weekly_20260828_130052_璟辉咨询收购园林股份10.35%：协议转让与交割条件.docx",
+    "case_reports/09_上市公司_PE/weekly_20260828_130052_上海悦驰无疆收购中科通达9.92%股：要约与控制权安排.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "广西广电资产置换置入交科集团51%股权",
+      "category": "整合一级资产+资本化",
+      "error": "Report quality validation failed for 广西广电资产置换置入交科集团51%股权: hard=['主副标题必须包含标的方名称或简称：交科集团51%股权（置入）及广电科技100%股权（置出）。'] quality=['标题缺少核心交易逻辑关键词，需要体现交易结构、产业位置、控制权、财务影响或承接重点。']"
+    },
+    {
+      "case_name": "高金食品资产置换及发行股份购买印纪影视100%股权（印纪传媒借壳上市）",
+      "category": "重组上市（借壳，含类借壳）",
+      "error": "Candidate worker timed out after 720s: 高金食品资产置换及发行股份购买印纪影视100%股权（印纪传媒借壳上市）"
+    },
+    {
+      "case_name": "国林科技收购银邦海外化学企业有限公司91.07%股权",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for 国林科技收购银邦海外化学企业有限公司91.07%股权: hard=[] quality=['长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。']"
+    }
+  ]
+}
