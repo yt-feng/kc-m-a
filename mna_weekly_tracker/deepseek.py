@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
+import time
 from json import JSONDecodeError
 from typing import Any
 
@@ -18,6 +20,16 @@ from .sources_fixed import is_aggregator_url, is_usable_article_url, unwrap_news
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_HTTP_ATTEMPTS = 4
+DEFAULT_RETRY_BASE_SECONDS = 2.0
+DEFAULT_RETRY_MAX_SECONDS = 30.0
+RETRIABLE_HTTP_STATUSES = {408, 409, 425, 429}
+RETRIABLE_REQUEST_ERRORS = (
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ContentDecodingError,
+    requests.exceptions.Timeout,
+)
 MAX_CASES_PER_BATCH = 12
 PLACEHOLDER_VALUES = {"", "-", "无", "未知", "不详", "未披露", "n/a", "na", "none", "null"}
 PARTY_SUFFIX_RE = re.compile(
@@ -29,6 +41,81 @@ PARTY_SUFFIX_RE = re.compile(
 
 class DeepSeekError(RuntimeError):
     pass
+
+
+def _env_number(name: str, default: int | float, *, minimum: int | float, maximum: int | float) -> int | float:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = type(default)(raw_value)
+    except (TypeError, ValueError):
+        LOGGER.warning("Ignoring invalid %s=%r; using default=%s", name, raw_value, default)
+        return default
+    return min(max(value, minimum), maximum)
+
+
+def _response_detail(response: requests.Response) -> str:
+    try:
+        return response.text[:1000]
+    except requests.exceptions.RequestException as exc:
+        return f"<response body unavailable: {type(exc).__name__}>"
+
+
+def _retry_after_seconds(response: requests.Response) -> float | None:
+    value = response.headers.get("Retry-After", "").strip()
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def _retry_delay(attempt: int, response: requests.Response | None = None) -> float:
+    base = float(
+        _env_number(
+            "DEEPSEEK_RETRY_BASE_SECONDS",
+            DEFAULT_RETRY_BASE_SECONDS,
+            minimum=0.0,
+            maximum=60.0,
+        )
+    )
+    maximum = float(
+        _env_number(
+            "DEEPSEEK_RETRY_MAX_SECONDS",
+            DEFAULT_RETRY_MAX_SECONDS,
+            minimum=0.0,
+            maximum=300.0,
+        )
+    )
+    delay = min(maximum, base * (2 ** max(0, attempt - 1)))
+    if response is not None:
+        retry_after = _retry_after_seconds(response)
+        if retry_after is not None:
+            delay = min(maximum, max(delay, retry_after))
+    if delay > 0:
+        delay = min(maximum, delay + random.uniform(0.0, min(1.0, delay * 0.1)))
+    return delay
+
+
+def _sleep_before_retry(
+    *,
+    attempt: int,
+    max_attempts: int,
+    reason: str,
+    response: requests.Response | None = None,
+) -> None:
+    delay = _retry_delay(attempt, response)
+    LOGGER.warning(
+        "DeepSeek request transient failure attempt=%s/%s retry_in=%.2fs reason=%s",
+        attempt,
+        max_attempts,
+        delay,
+        reason,
+    )
+    if delay > 0:
+        time.sleep(delay)
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -55,25 +142,118 @@ def deepseek_chat(messages: list[dict[str, str]], *, model: str | None = None, t
         raise DeepSeekError("DEEPSEEK_API_KEY is not set")
     base_url = os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     model_name = model or os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL)
-    response = requests.post(
-        f"{base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model_name,
-            "messages": messages,
-            "temperature": 0.1,
-            "stream": False,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=timeout,
+    max_attempts = int(
+        _env_number(
+            "DEEPSEEK_HTTP_ATTEMPTS",
+            DEFAULT_HTTP_ATTEMPTS,
+            minimum=1,
+            maximum=10,
+        )
     )
-    if response.status_code >= 400:
-        raise DeepSeekError(f"DeepSeek API error {response.status_code}: {response.text[:1000]}")
-    data = response.json()
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise DeepSeekError(f"Unexpected DeepSeek response: {data}") from exc
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": 0.1,
+        "stream": False,
+        "response_format": {"type": "json_object"},
+    }
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        LOGGER.info(
+            "DeepSeek request attempt=%s/%s model=%s timeout=%ss messages=%s",
+            attempt,
+            max_attempts,
+            model_name,
+            timeout,
+            len(messages),
+        )
+        try:
+            response = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+        except RETRIABLE_REQUEST_ERRORS as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            _sleep_before_retry(
+                attempt=attempt,
+                max_attempts=max_attempts,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            continue
+        except requests.exceptions.RequestException as exc:
+            raise DeepSeekError(f"DeepSeek request failed without retry: {type(exc).__name__}: {exc}") from exc
+
+        if response.status_code >= 400:
+            detail = _response_detail(response)
+            if response.status_code in RETRIABLE_HTTP_STATUSES or response.status_code >= 500:
+                last_error = DeepSeekError(f"DeepSeek API error {response.status_code}: {detail}")
+                if attempt >= max_attempts:
+                    break
+                _sleep_before_retry(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    reason=f"HTTP {response.status_code}",
+                    response=response,
+                )
+                continue
+            raise DeepSeekError(f"DeepSeek API error {response.status_code}: {detail}")
+
+        try:
+            data = response.json()
+        except (requests.exceptions.JSONDecodeError, JSONDecodeError, ValueError) as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            _sleep_before_retry(
+                attempt=attempt,
+                max_attempts=max_attempts,
+                reason=f"invalid JSON response: {exc}",
+                response=response,
+            )
+            continue
+
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            last_error = DeepSeekError(f"Unexpected DeepSeek response: {data}")
+            if attempt >= max_attempts:
+                break
+            _sleep_before_retry(
+                attempt=attempt,
+                max_attempts=max_attempts,
+                reason=f"unexpected response shape: {type(exc).__name__}",
+                response=response,
+            )
+            continue
+
+        if not isinstance(content, str) or not content.strip():
+            last_error = DeepSeekError("DeepSeek returned empty content")
+            if attempt >= max_attempts:
+                break
+            _sleep_before_retry(
+                attempt=attempt,
+                max_attempts=max_attempts,
+                reason="empty content",
+                response=response,
+            )
+            continue
+
+        LOGGER.info(
+            "DeepSeek request succeeded attempt=%s/%s model=%s response_chars=%s",
+            attempt,
+            max_attempts,
+            model_name,
+            len(content),
+        )
+        return content
+
+    error_detail = f"{type(last_error).__name__}: {last_error}" if last_error else "unknown error"
+    raise DeepSeekError(f"DeepSeek request failed after {max_attempts} attempts: {error_detail}") from last_error
 
 
 def compact_item(item: RawItem) -> dict[str, str]:
@@ -355,9 +535,25 @@ def structure_cases(items: list[RawItem], *, start_label: str, end_label: str, b
         return []
     if not os.getenv("DEEPSEEK_API_KEY"):
         raise DeepSeekError("DEEPSEEK_API_KEY is not set")
+    batches = list(chunked(items, batch_size))
     all_cases: list[dict[str, str]] = []
-    for batch_index, batch in enumerate(chunked(items, batch_size), start=1):
-        all_cases.extend(parse_deepseek_batch(batch, start_label, end_label, batch_index))
+    for batch_index, batch in enumerate(batches, start=1):
+        LOGGER.info(
+            "Structuring DeepSeek batch=%s/%s raw_items=%s accumulated_cases=%s",
+            batch_index,
+            len(batches),
+            len(batch),
+            len(all_cases),
+        )
+        batch_cases = parse_deepseek_batch(batch, start_label, end_label, batch_index)
+        all_cases.extend(batch_cases)
+        LOGGER.info(
+            "Structured DeepSeek batch=%s/%s batch_cases=%s accumulated_cases=%s",
+            batch_index,
+            len(batches),
+            len(batch_cases),
+            len(all_cases),
+        )
     return dedupe_cases(all_cases)[:max_cases]
 
 
