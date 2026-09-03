@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260904_065534_REPAY收购KUBRA：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260904_065534_江苏东星智慧医疗科技收购武汉医佳宝生物材料有：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260904_065534_青岛国林科技集团收购银邦海外化学企业有限：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 10,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260904_065534_于近日收到控股股东广收购广州市红棉智汇科创：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    }
+  ]
+}
