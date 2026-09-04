@@ -9,6 +9,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from .config import OUTPUT_COLUMNS
 from .sources_fixed import is_usable_article_url, unwrap_news_url
 
 BUSINESS_SHEETS = ("周度并购案例", "原始候选")
@@ -41,27 +42,57 @@ def validate_workbook(path: Path) -> dict[str, Any]:
         ws = workbook[sheet_name]
         headers = _headers(ws)
         url_col = headers.get("URL")
-        if sheet_name == "周度并购案例" and not url_col:
-            issues.append({"sheet": sheet_name, "cell": "-", "type": "missing_url_column", "url": ""})
+        if sheet_name == "周度并购案例":
+            for column in OUTPUT_COLUMNS:
+                if column not in headers:
+                    issues.append(
+                        {
+                            "sheet": sheet_name,
+                            "cell": "-",
+                            "type": "missing_required_column",
+                            "url": "",
+                            "column": column,
+                        }
+                    )
 
         for row_idx in range(2, ws.max_row + 1):
             if sheet_name == "周度并购案例":
+                if not any(cell.value not in (None, "") for cell in ws[row_idx]):
+                    continue
                 case_rows += 1
                 raw_url = str(ws.cell(row=row_idx, column=url_col).value or "").strip() if url_col else ""
                 clean_url = unwrap_news_url(raw_url)
                 if clean_url and is_usable_article_url(clean_url):
                     case_url_nonempty += 1
                 else:
-                    issues.append({"sheet": sheet_name, "cell": f"{ws.cell(row=row_idx, column=url_col).coordinate if url_col else row_idx}", "type": "empty_or_unusable_case_url", "url": raw_url})
+                    cell = ws.cell(row=row_idx, column=url_col).coordinate if url_col else str(row_idx)
+                    issues.append(
+                        {
+                            "sheet": sheet_name,
+                            "cell": cell,
+                            "type": "empty_or_unusable_case_url",
+                            "url": raw_url,
+                        }
+                    )
 
             for cell in ws[row_idx]:
                 for value_type, url in _cell_url_values(cell):
                     url_count += 1
                     clean_url = unwrap_news_url(url)
                     if not is_usable_article_url(clean_url):
-                        issues.append({"sheet": sheet_name, "cell": cell.coordinate, "type": f"unusable_{value_type}_url", "url": url})
+                        issues.append(
+                            {
+                                "sheet": sheet_name,
+                                "cell": cell.coordinate,
+                                "type": f"unusable_{value_type}_url",
+                                "url": url,
+                            }
+                        )
 
-    return {
+    if case_rows == 0:
+        issues.append({"sheet": "周度并购案例", "cell": "-", "type": "no_case_rows", "url": ""})
+
+    result = {
         "path": str(path),
         "url_count": url_count,
         "case_rows": case_rows,
@@ -69,6 +100,8 @@ def validate_workbook(path: Path) -> dict[str, Any]:
         "issue_count": len(issues),
         "issues": issues[:100],
     }
+    workbook.close()
+    return result
 
 
 def _latest(paths: list[Path]) -> list[Path]:

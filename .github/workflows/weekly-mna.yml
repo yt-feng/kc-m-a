@@ -11,9 +11,17 @@ on:
   workflow_dispatch:
     inputs:
       days:
-        description: "Lookback days"
+        description: "Weekly window length; keep 7 for automatic recovery"
         required: false
         default: "7"
+      start_date:
+        description: "Optional exact backfill start date (YYYY-MM-DD); requires end_date"
+        required: false
+        default: ""
+      end_date:
+        description: "Optional exact backfill end date (YYYY-MM-DD); must be 7 days after start_date"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -33,7 +41,10 @@ jobs:
       MAX_RAW_ITEMS: "450"
       MAX_STRUCTURED_CASES: "120"
       MNA_MAX_TITLE_URL_RESOLVES: "10"
+      MNA_RECOVERY_START_DATE: "2026-07-31"
       DAYS: ${{ github.event.inputs.days || '7' }}
+      START_DATE: ${{ github.event.inputs.start_date || '' }}
+      END_DATE: ${{ github.event.inputs.end_date || '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -50,10 +61,51 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Generate weekly M&A Excel
-        run: python -m mna_weekly_tracker.main --days "$DAYS" --output-dir outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated_list="$RUNNER_TEMP/generated_weekly_excel_files.txt"
+          args=(
+            --days "$DAYS"
+            --output-dir outputs
+            --write-generated-list "$generated_list"
+          )
+          if [[ -n "$START_DATE" || -n "$END_DATE" ]]; then
+            if [[ -z "$START_DATE" || -z "$END_DATE" ]]; then
+              echo "start_date and end_date must be provided together."
+              exit 2
+            fi
+            args+=(--start-date "$START_DATE" --end-date "$END_DATE")
+          else
+            args+=(--recover-missing-weeks --recovery-start-date "$MNA_RECOVERY_START_DATE")
+          fi
+          python -m mna_weekly_tracker.main "${args[@]}"
+          echo "Generated workbook list:"
+          cat "$generated_list"
 
       - name: Validate generated Excel links
-        run: python -m mna_weekly_tracker.url_validation outputs/*.xlsx --latest --write-json outputs/url_validation_latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated_list="$RUNNER_TEMP/generated_weekly_excel_files.txt"
+          if [[ ! -f "$generated_list" ]]; then
+            echo "Generated workbook list is missing."
+            exit 1
+          fi
+          mapfile -t generated_files < "$generated_list"
+          if [[ ${#generated_files[@]} -eq 0 ]]; then
+            echo "No missing weekly workbooks; validation is a no-op."
+            exit 0
+          fi
+          for path in "${generated_files[@]}"; do
+            if [[ "$path" != outputs/并购案例一览_*.xlsx || ! -f "$path" ]]; then
+              echo "Invalid generated workbook path: $path"
+              exit 1
+            fi
+          done
+          python -m mna_weekly_tracker.url_validation \
+            "${generated_files[@]}" \
+            --write-json outputs/url_validation_latest.json
 
       - name: Commit generated Excel
         shell: bash
@@ -62,15 +114,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          shopt -s nullglob
-          generated_files=(outputs/*.xlsx)
+          generated_list="$RUNNER_TEMP/generated_weekly_excel_files.txt"
+          if [[ ! -f "$generated_list" ]]; then
+            echo "Generated workbook list is missing."
+            exit 1
+          fi
+          mapfile -t generated_files < "$generated_list"
           if [ ${#generated_files[@]} -eq 0 ]; then
-            echo "No Excel files generated."
+            echo "No missing weekly workbooks; nothing to commit."
             exit 0
           fi
 
           tmp_dir="$(mktemp -d)"
-          cp -f outputs/*.xlsx "$tmp_dir"/
+          for path in "${generated_files[@]}"; do
+            if [[ "$path" != outputs/并购案例一览_*.xlsx || ! -f "$path" ]]; then
+              echo "Invalid generated workbook path: $path"
+              exit 1
+            fi
+            cp -f -- "$path" "$tmp_dir/$(basename "$path")"
+          done
           cp -f outputs/url_validation_latest.json "$tmp_dir"/
           commit_msg="chore: add weekly M&A cases $(date +'%Y-%m-%d')"
 
@@ -79,9 +141,11 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             mkdir -p outputs
-            cp -f "$tmp_dir"/*.xlsx outputs/
+            for path in "${generated_files[@]}"; do
+              cp -f -- "$tmp_dir/$(basename "$path")" "$path"
+            done
             cp -f "$tmp_dir"/url_validation_latest.json outputs/
-            git add outputs/*.xlsx outputs/url_validation_latest.json
+            git add -- "${generated_files[@]}" outputs/url_validation_latest.json
             if git diff --cached --quiet; then
               echo "No Excel changes to commit."
               exit 0

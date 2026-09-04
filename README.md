@@ -22,7 +22,7 @@ GitHub Actions 的 cron 使用 UTC，因此 workflow 中配置的是：
 outputs/并购案例一览_YYYYMMDD_YYYYMMDD.xlsx
 ```
 
-文件名中的两个日期对应最近 7 天的起止日期。Excel 包含：
+文件名中的两个日期对应北京时间周五 05:00 到下一周周五 05:00 的固定 7 天区间。Excel 包含：
 
 - `周度并购案例`：结构化案例主表
 - `运行摘要`：运行区间、候选数、案例数、警告信息
@@ -83,10 +83,12 @@ DeepSeek 输出会被限制为 JSON，并映射到 Excel 列：案例分类、�
 ```bash
 pip install -r requirements.txt
 export DEEPSEEK_API_KEY="your_api_key"
-python -m mna_weekly_tracker.main --days 7 --output-dir outputs
+python -m mna_weekly_tracker.main --days 7 --recover-missing-weeks --output-dir outputs
 ```
 
-也可以在 GitHub Actions 页面使用 `workflow_dispatch` 手动触发。
+每次定时运行都会从 `2026-07-31` 连续检查到当前周：缺失、损坏、零案例、缺少必需列或存在不可用业务链接的 workbook 会自动进入回补队列。校验和提交只处理本轮实际生成的文件；Action 只有在所有周区间重新连续后才会成功。
+
+也可以在 GitHub Actions 页面使用 `workflow_dispatch` 手动触发。精确回补某一周时同时填写 `start_date` 和 `end_date`，例如 `2026-08-14` 与 `2026-08-21`；两者必须正好相差 7 天。
 
 ## 配置位置
 

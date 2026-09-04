@@ -17,17 +17,25 @@
 
 ```text
 .github/workflows/weekly-mna.yml
-  -> python -m mna_weekly_tracker.main --days "$DAYS" --output-dir outputs
+  -> python -m mna_weekly_tracker.main --recover-missing-weeks --days 7 --output-dir outputs
   -> outputs/并购案例一览_YYYYMMDD_YYYYMMDD.xlsx
 ```
 
 默认参数：
 
 - 北京时间每周五 05:00 自动运行。
-- 最近 7 天窗口。
+- 北京时间周五 05:00 到下一周周五 05:00 的固定 7 天窗口，不再使用 Action 实际启动时间作为浮动边界。
 - `MAX_RAW_ITEMS=450`。
 - `MAX_STRUCTURED_CASES=120`。
 - 输出 workbook 包含：`周度并购案例`、`运行摘要`、`跟踪信息源`、`原始候选`。
+
+连续性与回补规则：
+
+- 以 `2026-07-31` 为连续性基线，每轮扫描至最近一个周五 05:00 的所有标准周区间。
+- 缺失文件、损坏文件、零案例、缺少必需列或业务 URL 不可用，都视为该周未完成并进入回补队列。
+- 多个缺口按时间顺序生成；每生成一个文件立即做完整性校验，全部缺口关闭后 Action 才能成功。
+- workflow 使用本轮生成清单做二次 URL 校验和提交，不再用目录里日期最新的文件代替本轮回补文件。
+- 手工回补通过 `start_date`、`end_date` 指定精确 7 天区间，禁止用扩大 `days` 生成跨周混合文件。
 
 ### 2.2 模块职责
 
@@ -45,7 +53,8 @@ mna_weekly_tracker/config.py
 - Weekly Case Reports 另有 Tavily 搜索补充，用于发现已完成交易的公告、监管文件或公司新闻稿；Tavily 只做发现层，最终事实仍需回到原始公告、监管文件或公司新闻稿核验。
 - `deepseek.py`：将 raw candidates 结构化为 Excel 行；默认要求 `DEEPSEEK_API_KEY` 存在且调用成功。
 - `excel.py`：写 workbook，并把所有跟踪源和关键词写入 `跟踪信息源` sheet。
-- `main.py`：CLI orchestration，负责日期窗口、采集、结构化、写文件。
+- `weekly_windows.py`：维护固定周界、连续性扫描、workbook 完成判定和缺口队列。
+- `main.py`：CLI orchestration，负责回补计划、采集、结构化、逐文件校验和写文件。
 
 ### 2.3 信息源体系
 
