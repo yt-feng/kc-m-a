@@ -1,0 +1,41 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20260911_065201",
+  "requested_count": 4,
+  "candidate_count": 16,
+  "attempted_count": 9,
+  "count": 4,
+  "files": [
+    "case_reports/02_上市平台持续整合/weekly_20260911_065201_公司筹划以现金方式购收购嘉士伯国际有限公司1：现金支付与业务承接.docx",
+    "case_reports/03_上市公司控股权并购/weekly_20260911_065201_北京晟世天安科技收购厦门安妮：控制权与治理安排.docx",
+    "case_reports/01_整合一级资产_资本化/weekly_20260911_065201_北京利德曼生化收购北京先声祥瑞生物制品：控制权与治理安排.docx",
+    "case_reports/09_上市公司_PE/weekly_20260911_065201_九祥安富证券投资10收购华阳智能8.48%股：要约与控制权安排.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "Artivion收购Endospan",
+      "category": "跨境并购",
+      "error": "Report quality validation failed for Artivion收购Endospan: hard=[] quality=['分析深度不足：需要同时展开至少三个层面，例如产业判断、交易结构、财务影响、交割承接或并购方法论意义。', '长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。', '文章前部没有说明交易目标，需要解释为什么要做这笔交易，以及希望实现取得控制权、内部整合、产业协同、退出变现、优化资本结构或补强业务等哪类目标。']"
+    },
+    {
+      "case_name": "Otovo收购SunSystem Technology",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Fact pack validation failed for Otovo收购SunSystem Technology: ['缺少可引用的交易金额、估值或支付口径。']"
+    },
+    {
+      "case_name": "Public Storage收购National Storage Affiliates资产/权益",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for Public Storage收购National Storage Affiliates资产/权益: hard=[] quality=['长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。']"
+    },
+    {
+      "case_name": "PIF、Silver Lake与Affinity Partners联合收购艺电（EA）",
+      "category": "私有化+境内上市",
+      "error": "Report quality validation failed for PIF、Silver Lake与Affinity Partners联合收购艺电（EA）: hard=['缺少并购方/买方购买理由，需要明确写出并购方为什么愿意买。'] quality=[]"
+    },
+    {
+      "case_name": "Western Midstream收购Brazos Delaware II",
+      "category": "整合一级资产+资本化",
+      "error": "Report quality validation failed for Western Midstream收购Brazos Delaware II: hard=['交易双方基本介绍不足，需要写清并购方和标的方的主营业务、资产/产品、财务或经营规模。'] quality=['长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。', '文章前部没有说明交易目标，需要解释为什么要做这笔交易，以及希望实现取得控制权、内部整合、产业协同、退出变现、优化资本结构或补强业务等哪类目标。']"
+    }
+  ]
+}
