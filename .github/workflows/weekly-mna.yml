@@ -38,7 +38,6 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_MODEL: deepseek-v4-flash
       MNA_OUTPUT_DIR: outputs
-      MNA_DIAGNOSTIC_DIR: ${{ runner.temp }}/weekly-mna-diagnostics
       MAX_RAW_ITEMS: "450"
       MAX_STRUCTURED_CASES: "120"
       MNA_MAX_TITLE_URL_RESOLVES: "10"
@@ -72,6 +71,7 @@ jobs:
           args=(
             --days "$DAYS"
             --output-dir outputs
+            --diagnostic-dir "$RUNNER_TEMP/weekly-mna-diagnostics"
             --write-generated-list "$generated_list"
           )
           if [[ -n "$START_DATE" || -n "$END_DATE" ]]; then
