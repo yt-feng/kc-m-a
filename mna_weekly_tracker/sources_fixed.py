@@ -51,6 +51,10 @@ _TITLE_URL_RESOLVE_CACHE: dict[str, str] = {}
 _TITLE_URL_RESOLVE_ATTEMPTS = 0
 
 
+class SourceAccessDeniedError(RuntimeError):
+    """A provider refused access; retrying its queries will not recover data."""
+
+
 @dataclass
 class RawItem:
     title: str
@@ -319,6 +323,11 @@ def request_with_retries(method: str, url: str, *, retries: int = 1, sleep_secon
             r.raise_for_status()
             return r
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                if exc.response.status_code in {401, 403}:
+                    raise SourceAccessDeniedError(
+                        f"source access denied: HTTP {exc.response.status_code} for {url}"
+                    ) from exc
             last_exc = exc
             if attempt < retries:
                 time.sleep(sleep_seconds * (attempt + 1))
@@ -411,6 +420,8 @@ def fetch_cninfo(source: SourceConfig, start: datetime, end: datetime, page_size
             }
             try:
                 payload = request_with_retries("POST", endpoint, headers=headers, data=data, timeout=20).json()
+            except SourceAccessDeniedError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("CNINFO fetch failed: %s %s page=%s error=%s", source.name, keyword, page_num, exc)
                 break

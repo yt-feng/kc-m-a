@@ -38,6 +38,7 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_MODEL: deepseek-v4-flash
       MNA_OUTPUT_DIR: outputs
+      MNA_DIAGNOSTIC_DIR: ${{ runner.temp }}/weekly-mna-diagnostics
       MAX_RAW_ITEMS: "450"
       MAX_STRUCTURED_CASES: "120"
       MNA_MAX_TITLE_URL_RESOLVES: "10"
@@ -59,6 +60,9 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Test weekly collection and generation
+        run: python -m unittest discover -s tests -p 'test_mna_weekly*.py'
 
       - name: Generate weekly M&A Excel
         shell: bash
@@ -161,3 +165,14 @@ jobs:
 
           echo "Failed to push generated Excel after retries."
           exit 1
+
+      - name: Preserve current run generation diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-mna-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/weekly-mna-diagnostics/
+            ${{ runner.temp }}/generated_weekly_excel_files.txt
+          if-no-files-found: warn
+          retention-days: 14

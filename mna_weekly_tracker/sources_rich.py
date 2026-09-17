@@ -7,8 +7,10 @@ from datetime import datetime
 from typing import Iterable
 
 from .config import GLOBAL_QUERIES, HKEX_QUERIES, MIDDLE_EAST_QUERIES, TRACKED_FETCH_SOURCES, SourceConfig
+from .sources_announcements import ANNOUNCEMENTS_SOURCE_NAME, fetch_public_announcements
 from .sources_fixed import (
     RawItem,
+    SourceAccessDeniedError,
     candidate_sort_key,
     dedupe_items,
     fetch_bing_news,
@@ -99,17 +101,34 @@ def fetch_all_candidates(start: datetime, end: datetime, max_items: int = 450) -
     errors: list[str] = []
     candidates: list[RawItem] = []
     source_rows: list[tuple[str, str, int]] = []
+    cninfo_unavailable = False
+    cninfo_count = 0
 
     for source in TRACKED_FETCH_SOURCES:
+        if source.kind == "cninfo_api" and cninfo_unavailable:
+            LOGGER.info("Source skipped after endpoint access denial: %s", source.name)
+            source_rows.append((source.name, source.kind, 0))
+            continue
         try:
             items = fetch_source(source, start, end)
             source_rows.append((source.name, source.kind, len(items)))
+            if source.kind == "cninfo_api":
+                cninfo_count += len(items)
             _extend_unique(candidates, items)
         except Exception as exc:  # noqa: BLE001
+            if source.kind == "cninfo_api" and isinstance(exc, SourceAccessDeniedError):
+                cninfo_unavailable = True
             msg = f"source failed: {source.name}: {exc}"
             LOGGER.warning(msg)
             errors.append(msg)
             source_rows.append((source.name, source.kind, 0))
+
+    if cninfo_unavailable or cninfo_count == 0:
+        LOGGER.warning("CNINFO unavailable or empty; collecting independent public disclosure fallback")
+        # An incomplete fallback must not be accepted as a complete weekly input.
+        fallback_items = fetch_public_announcements(start, end)
+        source_rows.append((ANNOUNCEMENTS_SOURCE_NAME, "public_announcements", len(fallback_items)))
+        _extend_unique(candidates, fallback_items)
 
     for name, kind, count in source_rows:
         LOGGER.info("Source summary: kind=%s count=%s name=%s", kind, count, name)

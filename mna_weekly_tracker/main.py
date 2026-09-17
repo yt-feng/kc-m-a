@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -116,6 +117,19 @@ def write_generated_list(path: str, generated_paths: list[Path]) -> None:
     list_path.write_text(text, encoding="utf-8")
 
 
+def write_diagnostic_json(path: Path, payload: object) -> None:
+    """Persist replayable inputs and progress without credential values."""
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    for name, value in os.environ.items():
+        if len(value) >= 6 and name.upper().endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")):
+            text = text.replace(json.dumps(value, ensure_ascii=False)[1:-1], "[REDACTED]")
+    text = re.sub(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(text + "\n", encoding="utf-8")
+    temporary_path.replace(path)
+
+
 def generate_window(args: argparse.Namespace, window: WeeklyWindow) -> Path:
     start = window.start
     end = window.end
@@ -123,34 +137,73 @@ def generate_window(args: argparse.Namespace, window: WeeklyWindow) -> Path:
     end_label = label(end)
     output_dir = Path(args.output_dir)
     output_path = window.output_path(output_dir)
+    diagnostic_dir = Path(getattr(args, "diagnostic_dir", "") or output_dir / "_diagnostics")
+    window_key = f"{start:%Y%m%dT%H%M%S}_{end:%Y%m%dT%H%M%S}"
+    diagnostic_path = diagnostic_dir / f"{window_key}.diagnostic.json"
+    raw_path = diagnostic_dir / f"{window_key}.raw.json"
+    diagnostic = {
+        "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "output_path": str(output_path),
+        "raw_checkpoint_path": str(raw_path),
+        "status": "running",
+        "stage": "collecting",
+        "raw_count": None,
+        "structured_count": None,
+        "case_count": None,
+        "source_errors": [],
+        "validation": None,
+        "failure": None,
+    }
+    write_diagnostic_json(diagnostic_path, diagnostic)
     LOGGER.info(
         "Generating weekly window start=%s end=%s output=%s",
         start_label,
         end_label,
         output_path,
     )
-    if args.raw_json:
-        LOGGER.info("Loading raw candidates from %s", args.raw_json)
-        raw_items = parse_raw_json(args.raw_json)
-        errors: list[str] = []
-    else:
-        LOGGER.info("Collecting candidates for %s to %s", start_label, end_label)
-        raw_items, errors = fetch_all_candidates(start, end, max_items=args.max_raw_items)
-    LOGGER.info("Collected %s raw candidates", len(raw_items))
-    cases = structure_cases(raw_items, start_label=start_label, end_label=end_label, max_cases=args.max_cases)
-    previous_identities = load_previous_case_identities(output_dir, current_output=output_path)
-    cases = filter_previous_cases(cases, previous_identities)
-    LOGGER.info("Structured %s cases", len(cases))
-    wb = build_workbook(cases, raw_items, errors, start_label=start_label, end_label=end_label)
-    save_workbook(wb, output_path)
+    try:
+        if args.raw_json:
+            LOGGER.info("Loading raw candidates from %s", args.raw_json)
+            raw_items = parse_raw_json(args.raw_json)
+            errors: list[str] = []
+        else:
+            LOGGER.info("Collecting candidates for %s to %s", start_label, end_label)
+            raw_items, errors = fetch_all_candidates(start, end, max_items=args.max_raw_items)
+        LOGGER.info("Collected %s raw candidates", len(raw_items))
+        write_diagnostic_json(raw_path, [item.as_dict() for item in raw_items])
+        diagnostic.update(raw_count=len(raw_items), source_errors=errors, stage="structuring")
+        write_diagnostic_json(diagnostic_path, diagnostic)
 
-    validation = validate_workbook(output_path)
-    if validation["issue_count"] or validation["case_rows"] <= 0:
-        issue_types = sorted({str(issue.get("type", "unknown")) for issue in validation["issues"]})
-        raise RuntimeError(
-            f"Generated workbook failed completeness validation: path={output_path} "
-            f"case_rows={validation['case_rows']} issues={issue_types}"
-        )
+        cases = structure_cases(raw_items, start_label=start_label, end_label=end_label, max_cases=args.max_cases)
+        diagnostic.update(structured_count=len(cases), stage="filtering_previous_cases")
+        write_diagnostic_json(diagnostic_path, diagnostic)
+        previous_identities = load_previous_case_identities(output_dir, current_output=output_path)
+        cases = filter_previous_cases(cases, previous_identities)
+        LOGGER.info("Structured %s cases", len(cases))
+        diagnostic.update(case_count=len(cases), stage="writing_workbook")
+        write_diagnostic_json(diagnostic_path, diagnostic)
+        wb = build_workbook(cases, raw_items, errors, start_label=start_label, end_label=end_label)
+        save_workbook(wb, output_path)
+
+        diagnostic["stage"] = "validating"
+        write_diagnostic_json(diagnostic_path, diagnostic)
+        validation = validate_workbook(output_path)
+        diagnostic["validation"] = validation
+        if validation["issue_count"] or validation["case_rows"] <= 0:
+            issue_types = sorted({str(issue.get("type", "unknown")) for issue in validation["issues"]})
+            raise RuntimeError(
+                f"Generated workbook failed completeness validation: path={output_path} "
+                f"case_rows={validation['case_rows']} issues={issue_types}"
+            )
+        diagnostic.update(status="succeeded", stage="complete")
+        write_diagnostic_json(diagnostic_path, diagnostic)
+    except Exception as exc:
+        diagnostic.update(status="failed", failure={"type": type(exc).__name__, "message": str(exc)[:2000]})
+        try:
+            write_diagnostic_json(diagnostic_path, diagnostic)
+        except OSError:
+            LOGGER.exception("Failed to preserve generation diagnostic: %s", diagnostic_path)
+        raise
     LOGGER.info(
         "Wrote complete weekly workbook path=%s case_rows=%s url_count=%s",
         output_path,
@@ -187,6 +240,11 @@ def parse_args() -> argparse.Namespace:
         help="Maximum structured cases in the Excel. Default: 120.",
     )
     parser.add_argument("--raw-json", default="", help="Optional local raw candidates JSON for debugging without network collection.")
+    parser.add_argument(
+        "--diagnostic-dir",
+        default=os.getenv("MNA_DIAGNOSTIC_DIR", ""),
+        help="Directory for per-window raw inputs and diagnostics. Default: OUTPUT_DIR/_diagnostics.",
+    )
     parser.add_argument("--start-date", default="", help="Explicit weekly start date in YYYY-MM-DD format; requires --end-date.")
     parser.add_argument("--end-date", default="", help="Explicit weekly end date in YYYY-MM-DD format; requires --start-date.")
     parser.add_argument(
