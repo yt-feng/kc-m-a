@@ -12,7 +12,7 @@ from typing import Any
 import requests
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 
 
@@ -113,6 +113,14 @@ def extract_json(text: str) -> dict[str, Any]:
             raise json.JSONDecodeError(f"{exc.msg}. Nearby text: {snippet}", exc.doc, exc.pos) from raw_exc
 
 
+def normalize_model_name(model: str) -> str:
+    """Keep saved V4 selections on the project's chosen Flash model."""
+    selected = model.strip()
+    if selected.lower().startswith(("deepseek-v4-pro", "deepseek-v4-flash")):
+        return DEFAULT_MODEL
+    return selected
+
+
 def _api_config(
     model: str | None = None,
     *,
@@ -127,7 +135,7 @@ def _api_config(
     if not api_key:
         raise DeepSeekError(f"{provider_label} API key env {api_key_env} is not set")
     base_url = os.getenv(base_url_env, default_base_url).rstrip("/")
-    model_name = model or os.getenv(model_env, default_model)
+    model_name = normalize_model_name(model or os.getenv(model_env, default_model))
     return api_key, base_url, model_name
 
 

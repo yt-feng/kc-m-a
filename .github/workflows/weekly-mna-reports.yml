@@ -56,7 +56,7 @@ on:
       article_model_provider:
         description: "Article model provider for complex long-form writing: rkapi, deepseek, or off."
         required: false
-        default: "deepseek-pro"
+        default: "deepseek"
       allow_draft_on_validation_failure:
         description: "Write a DOCX draft even if article quality validation fails. Manual smoke-test only."
         required: false
@@ -100,17 +100,17 @@ jobs:
     env:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      DEEPSEEK_MODEL: deepseek-v4-flash
+      DEEPSEEK_MODEL: deepseek-flash
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       REPORT_ARTICLE_API_KEY: ${{ secrets.RKAPI_API_KEY }}
-      REPORT_ARTICLE_MODEL_PROVIDER: ${{ github.event.inputs.article_model_provider || vars.REPORT_ARTICLE_MODEL_PROVIDER || 'deepseek-pro' }}
+      REPORT_ARTICLE_MODEL_PROVIDER: ${{ github.event.inputs.article_model_provider || vars.REPORT_ARTICLE_MODEL_PROVIDER || 'deepseek' }}
       REPORT_ARTICLE_BASE_URL: ${{ vars.REPORT_ARTICLE_BASE_URL || 'https://rkapi.com/v1' }}
       REPORT_ARTICLE_MODEL: ${{ vars.REPORT_ARTICLE_MODEL || 'gpt-5.5' }}
       REPORT_ARTICLE_REASONING_EFFORT: ${{ vars.REPORT_ARTICLE_REASONING_EFFORT || 'xhigh' }}
       REPORT_ARTICLE_MAX_TOKENS: ${{ vars.REPORT_ARTICLE_MAX_TOKENS || '9000' }}
       REPORT_ARTICLE_MODEL_RETRIES: ${{ vars.REPORT_ARTICLE_MODEL_RETRIES || '1' }}
-      REPORT_ARTICLE_FALLBACK_PROVIDER: ${{ vars.REPORT_ARTICLE_FALLBACK_PROVIDER || 'deepseek-pro' }}
-      REPORT_ARTICLE_DEEPSEEK_MODEL: ${{ vars.REPORT_ARTICLE_DEEPSEEK_MODEL || 'deepseek-v4-pro' }}
+      REPORT_ARTICLE_FALLBACK_PROVIDER: ${{ vars.REPORT_ARTICLE_FALLBACK_PROVIDER || 'deepseek' }}
+      REPORT_ARTICLE_DEEPSEEK_MODEL: ${{ vars.REPORT_ARTICLE_DEEPSEEK_MODEL || 'deepseek-flash' }}
       REPORT_JSON_RESPONSE_ATTEMPTS: "2"
       REPORT_MODE: ${{ github.event.inputs.mode || 'weekly' }}
       REPORT_COUNT: ${{ github.event.inputs.count || '4' }}

@@ -35,7 +35,7 @@ jobs:
     env:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      DEEPSEEK_MODEL: deepseek-v4-flash
+      DEEPSEEK_MODEL: deepseek-flash
       REPORT_MODE: ${{ github.event.inputs.mode || 'weekly' }}
       REPORT_COUNT: ${{ github.event.inputs.count || '1' }}
       REPORT_MIN_DOMESTIC: ${{ github.event.inputs.min_domestic || '1' }}

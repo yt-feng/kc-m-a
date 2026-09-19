@@ -36,7 +36,7 @@ jobs:
     env:
       TZ: Asia/Shanghai
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      DEEPSEEK_MODEL: deepseek-v4-flash
+      DEEPSEEK_MODEL: deepseek-flash
       MNA_OUTPUT_DIR: outputs
       MAX_RAW_ITEMS: "450"
       MAX_STRUCTURED_CASES: "120"

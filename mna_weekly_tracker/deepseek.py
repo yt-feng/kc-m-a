@@ -18,7 +18,7 @@ from .sources import RawItem, normalize_text
 from .sources_fixed import is_aggregator_url, is_usable_article_url, unwrap_news_url
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_HTTP_ATTEMPTS = 4
 DEFAULT_RETRY_BASE_SECONDS = 2.0

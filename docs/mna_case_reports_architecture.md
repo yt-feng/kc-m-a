@@ -194,11 +194,13 @@ REPORT_ARTICLE_MODEL_PROVIDER=rkapi
 REPORT_ARTICLE_BASE_URL=https://rkapi.com/v1
 REPORT_ARTICLE_MODEL=gpt-5.5
 REPORT_ARTICLE_REASONING_EFFORT=xhigh
-REPORT_ARTICLE_FALLBACK_PROVIDER=deepseek-pro
-REPORT_ARTICLE_DEEPSEEK_MODEL=deepseek-v4-pro
+REPORT_ARTICLE_FALLBACK_PROVIDER=deepseek
+REPORT_ARTICLE_DEEPSEEK_MODEL=deepseek-flash
 ```
 
-RKAPI 发生 5xx、Cloudflare 504 或 timeout 时，`article_chat_json()` 会先重试，再 fallback 到 `deepseek-v4-pro`，避免单篇正文生成卡死导致整轮 Action 无产物。
+RKAPI 发生 5xx、Cloudflare 504 或 timeout 时，`article_chat_json()` 会先重试，再 fallback 到 `deepseek-flash`，避免单篇正文生成卡死导致整轮 Action 无产物。
+
+DeepSeek 正文与轻量环节统一使用 `deepseek-flash`（DeepSeek V4.1 Flash）。旧的 V4 Pro/Flash 模型环境配置会在请求前归一到此模型，避免已保存的配置恢复 Pro 调用。
 
 轻量事实抽取和长文调用若返回空内容或不可解析 JSON，客户端会记录 `json_response_retry` 埋点并重新执行原任务。重试只处理模型响应故障，不会接受缺字段或未通过事实验证的结果。
 

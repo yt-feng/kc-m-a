@@ -71,7 +71,7 @@ DEEPSEEK_API_KEY
 默认模型：
 
 ```text
-deepseek-v4-flash
+deepseek-flash
 ```
 
 DeepSeek 输出会被限制为 JSON，并映射到 Excel 列：案例分类、序号、并购方、目标方、案例所属行业、并购方主营业务、标的主营业务、案例一句话简介、交易时间、交易对价、交易状态、备注、来源名称、URL、发布日期、地区。

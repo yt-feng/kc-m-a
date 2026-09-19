@@ -9,7 +9,7 @@ from unittest import mock
 
 import requests
 
-from mna_case_reports import deepseek_client
+from mna_case_reports import deepseek_client, report_generation
 from mna_case_reports.article_rules import (
     has_cjk_alnum_space,
     has_unformatted_quantity_number,
@@ -71,6 +71,67 @@ class JsonResponseRetryTests(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(post_chat.call_count, 2)
+
+
+class ArticleModelMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.disabled = set(report_generation.DISABLED_ARTICLE_PROVIDERS)
+        report_generation.DISABLED_ARTICLE_PROVIDERS.clear()
+
+    def tearDown(self) -> None:
+        report_generation.DISABLED_ARTICLE_PROVIDERS.clear()
+        report_generation.DISABLED_ARTICLE_PROVIDERS.update(self.disabled)
+
+    @staticmethod
+    def response(status: int = 200) -> mock.Mock:
+        response = mock.Mock(spec=requests.Response)
+        response.status_code = status
+        response.text = "unavailable" if status >= 400 else ""
+        response.json.return_value = {"choices": [{"message": {"content": '{"ok": true}'}}]}
+        return response
+
+    @mock.patch.dict(os.environ, {
+        "DEEPSEEK_API_KEY": "test-deepseek-key",
+        "REPORT_ARTICLE_MODEL_PROVIDER": "deepseek-pro",
+        "REPORT_ARTICLE_DEEPSEEK_MODEL": "deepseek-v4-pro",
+    }, clear=True)
+    @mock.patch("mna_case_reports.deepseek_client._post_chat_once")
+    def test_saved_pro_selection_sends_flash_request(self, post: mock.Mock) -> None:
+        post.return_value = self.response()
+        self.assertEqual(report_generation.article_chat_json([{"role": "user", "content": "return JSON"}]), {"ok": True})
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.args[2]["model"], "deepseek-flash")
+        self.assertEqual(post.call_args.args[1], "https://api.deepseek.com")
+
+    @mock.patch.dict(os.environ, {
+        "DEEPSEEK_API_KEY": "test-deepseek-key",
+        "REPORT_ARTICLE_API_KEY": "test-rkapi-key",
+        "REPORT_ARTICLE_MODEL_PROVIDER": "rkapi",
+        "REPORT_ARTICLE_DEEPSEEK_MODEL": "deepseek-v4-pro",
+        "REPORT_ARTICLE_FALLBACK_PROVIDER": "deepseek-pro",
+        "REPORT_ARTICLE_MODEL_RETRIES": "0",
+        "REPORT_JSON_RESPONSE_ATTEMPTS": "1",
+    }, clear=True)
+    @mock.patch("mna_case_reports.deepseek_client._post_chat_once")
+    def test_rkapi_failure_falls_back_to_flash(self, post: mock.Mock) -> None:
+        post.side_effect = [self.response(503), self.response()]
+        self.assertEqual(report_generation.article_chat_json([{"role": "user", "content": "return JSON"}]), {"ok": True})
+        self.assertEqual([c.args[2]["model"] for c in post.call_args_list], ["gpt-5.5", "deepseek-flash"])
+        self.assertEqual(post.call_args_list[1].args[0], "test-deepseek-key")
+
+    @mock.patch.dict(os.environ, {
+        "DEEPSEEK_API_KEY": "test-deepseek-key",
+        "REPORT_ARTICLE_MODEL_PROVIDER": "deepseek-pro",
+        "REPORT_ARTICLE_FALLBACK_PROVIDER": "deepseek",
+        "REPORT_ARTICLE_MODEL_RETRIES": "0",
+        "REPORT_JSON_RESPONSE_ATTEMPTS": "1",
+    }, clear=True)
+    @mock.patch("mna_case_reports.deepseek_client._post_chat_once")
+    def test_old_provider_alias_does_not_duplicate_same_provider_fallback(self, post: mock.Mock) -> None:
+        post.return_value = self.response(503)
+        with self.assertRaises(deepseek_client.DeepSeekError):
+            report_generation.article_chat_json([{"role": "user", "content": "return JSON"}])
+        self.assertEqual(post.call_count, 1)
 
 
 class FactPackValidationTests(unittest.TestCase):

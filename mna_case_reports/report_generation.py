@@ -29,7 +29,7 @@ from .article_rules_extra import (
 )
 from .case_selection import CaseBrief
 from .config import CATEGORY_GUIDE, REFERENCE_STYLE, STYLE_RULES, TOPIC_SELECTION_RULES
-from .deepseek_client import DeepSeekError, chat_json
+from .deepseek_client import DeepSeekError, chat_json, normalize_model_name
 from .fact_pack import FactPack, build_fact_pack
 from .narrative_generation import NarrativePlan, build_narrative_plan
 from .research import collect_research_context
@@ -72,14 +72,19 @@ def article_model_timeout(default: int = 240) -> int:
     return int(os.getenv("REPORT_ARTICLE_MODEL_TIMEOUT_SECONDS") or os.getenv("REPORT_MODEL_TIMEOUT_SECONDS", str(default)))
 
 
+def _normalize_article_provider(provider: str) -> str:
+    selected = provider.strip().lower()
+    return "deepseek" if selected.startswith("deepseek") else selected
+
+
 def _article_provider() -> str:
-    return (os.getenv("REPORT_ARTICLE_MODEL_PROVIDER") or "").strip().lower()
+    return _normalize_article_provider(os.getenv("REPORT_ARTICLE_MODEL_PROVIDER") or "")
 
 
 def _article_model_name(provider: str | None = None) -> str:
     provider_name = (provider or _article_provider()).strip().lower()
     if provider_name.startswith("deepseek"):
-        return (os.getenv("REPORT_ARTICLE_DEEPSEEK_MODEL") or "deepseek-v4-pro").strip()
+        return normalize_model_name(os.getenv("REPORT_ARTICLE_DEEPSEEK_MODEL") or "deepseek-flash")
     return (os.getenv("REPORT_ARTICLE_MODEL") or "gpt-5.5").strip()
 
 
@@ -153,7 +158,7 @@ def article_chat_json(messages: list[dict[str, str]], *, timeout: int | None = N
     if not _use_article_model():
         return chat_json(messages, timeout=timeout or model_timeout(180))
     provider = _article_provider()
-    fallback_provider = (os.getenv("REPORT_ARTICLE_FALLBACK_PROVIDER") or "deepseek-pro").strip().lower()
+    fallback_provider = _normalize_article_provider(os.getenv("REPORT_ARTICLE_FALLBACK_PROVIDER") or "deepseek")
     if provider in DISABLED_ARTICLE_PROVIDERS and fallback_provider not in {"", "none", "off", "0", provider} and _provider_has_api_key(fallback_provider):
         action_notice(f"report_stage stage=article_model_primary_disabled provider={provider} using={fallback_provider}")
         return _article_chat_json_provider(messages, provider=fallback_provider, timeout=timeout)
@@ -959,7 +964,7 @@ def generate_article(brief: CaseBrief) -> dict[str, object]:
 def generate_article_with_rows(brief: CaseBrief, research_rows: list[dict[str, str]]) -> dict[str, object]:
     action_notice(
         f"report_stage case={brief.case_name} stage=model_routing "
-        f"light_model={os.getenv('DEEPSEEK_MODEL', 'deepseek-v4-flash')} "
+        f"light_model={os.getenv('DEEPSEEK_MODEL', 'deepseek-flash')} "
         f"article_provider={_article_provider() or 'deepseek'} article_model={_article_model_name()}"
     )
     action_notice(f"report_stage case={brief.case_name} stage=fact_pack_start")
