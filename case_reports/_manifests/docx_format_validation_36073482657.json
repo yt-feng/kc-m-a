@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20260925_073836_中微半导体设备上海收购杭州众硅电子科技有限：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20260925_073836_上海盛讯栋岳信息科技收购新疆熙菱信息技术：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 17,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260925_073836_余新文先生收购华盛昌5%股份：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 12,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20260925_073836_山高速合收购绿能慧充5.25%股：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 18,
+      "half_width_quote_count": 0
+    }
+  ]
+}
