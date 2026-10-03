@@ -1,0 +1,31 @@
+name: Report recovery regression
+on:
+  pull_request:
+    paths:
+      - 'mna_case_reports/**'
+      - 'mna_weekly_tracker/**'
+      - 'tests/**'
+      - '.github/workflows/*reports*.yml'
+      - '.github/workflows/test-report-recovery.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mna_case_reports/**'
+      - 'mna_weekly_tracker/**'
+      - 'tests/**'
+      - '.github/workflows/*reports*.yml'
+      - '.github/workflows/test-report-recovery.yml'
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests

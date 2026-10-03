@@ -5,14 +5,12 @@ on:
   schedule:
     # 05:00 every Friday in Beijing = 21:00 every Thursday UTC.
     - cron: "0 21 * * 4"
-  push:
-    paths:
-      - ".github/workflows/weekly-mna-reports.yml"
-      - "mna_case_reports/**"
-      - "mna_weekly_tracker/**"
-      - "requirements.txt"
   workflow_dispatch:
     inputs:
+      resume_run_id:
+        description: "Original failed run with accepted reports to revalidate and complete on the runner."
+        required: false
+        default: ""
       mode:
         description: "weekly or backfill"
         required: false
@@ -88,6 +86,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: weekly-mna-case-reports-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
@@ -178,7 +177,18 @@ jobs:
           mkdir -p "$RUNNER_TEMP"
           touch "$RUNNER_TEMP/weekly_reports_start_marker"
 
+      - name: Restore original accepted reports on the runner
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.resume_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: mna-case-reports-${{ inputs.resume_run_id }}
+          run-id: ${{ inputs.resume_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/original-report-recovery
+
       - name: Generate M&A case reports
+        env:
+          REPORT_RESUME_ROOT: ${{ inputs.resume_run_id != '' && format('{0}/original-report-recovery', runner.temp) || '' }}
         run: python -m mna_case_reports.main --mode "$REPORT_MODE" --count "$REPORT_COUNT" --min-domestic "$REPORT_MIN_DOMESTIC" --days "$REPORT_LOOKBACK_DAYS" --offset "$REPORT_OFFSET" --output-root "$REPORT_OUTPUT_ROOT"
 
       - name: Collect generated weekly DOCX files
