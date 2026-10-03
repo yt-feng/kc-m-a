@@ -464,6 +464,26 @@ def section_concreteness_score(text: str, brief: CaseBrief) -> int:
     return score
 
 
+def has_buyer_rationale(text: str) -> bool:
+    """Recognize acquisition and minority-transfer language without inventing intent."""
+    if sum(1 for pattern in BUYER_MOTIVE_PATTERNS if pattern in text) >= 3:
+        return True
+    for paragraph in text.splitlines():
+        if len(paragraph.strip()) < 60:
+            continue
+        if not any(term in paragraph for term in ("受让方", "受让人", "投资方", "收购方", "并购方", "买方")):
+            continue
+        if not any(term in paragraph for term in ("目的", "动机", "理由", "旨在", "意在", "为了", "投资目标")):
+            continue
+        if "未披露" in paragraph:
+            # A bare disclosure gap is insufficient: explain only the documented mechanism.
+            if any(term in paragraph for term in ("持股", "股权比例", "表决权", "锁定期", "协议转让", "支付方式")) and any(term in paragraph for term in ("因此", "意味着", "对应", "从而")):
+                return True
+        elif any(term in paragraph for term in ("因此", "因为", "旨在", "为了", "从而", "意在")):
+            return True
+    return False
+
+
 def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_length: bool = True) -> list[str]:
     article = postprocess_article(article, brief)
     issues: list[str] = []
@@ -559,7 +579,7 @@ def validate_article(article: dict[str, object], brief: CaseBrief, *, strict_len
         issues.append("缺少交易对价或估值金额，需要写明交易金额、估值、作价或支付方式。")
     if sum(1 for pattern in FINANCIAL_PATTERNS if pattern in text) < 4:
         issues.append("财务和经营数据不足，需要加入买方或标的的收入、净利润、负债、现金流、产能、订单、员工、用户、资源量或股权比例等。")
-    if sum(1 for pattern in BUYER_MOTIVE_PATTERNS if pattern in text) < 3:
+    if not has_buyer_rationale(text):
         issues.append("缺少并购方/买方购买理由，需要明确写出并购方为什么愿意买。")
     if sum(1 for pattern in SELLER_MOTIVE_PATTERNS if pattern in text) < 2:
         issues.append("缺少标的方/出售方接受交易安排的原因或客观安排依据，需要明确写出被并购方、转让方或预受要约股东为什么愿意卖、接受整合，或公开资料能够支撑的交易机制。")

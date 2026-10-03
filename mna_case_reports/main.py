@@ -39,6 +39,7 @@ from .case_selection import (
 from .config import CATEGORY_FOLDER_NAMES, CATEGORIES
 from .docx_writer import write_docx
 from .report_generation import generate_article, set_progress_queue
+from .recovery import restore_accepted
 
 LOGGER = logging.getLogger(__name__)
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -301,6 +302,12 @@ def main() -> None:
     configure_logging(args.verbose)
     output_root = Path(args.output_root)
     ensure_category_dirs(output_root)
+    resumed_files: list[str] = []
+    resumed_briefs: list[CaseBrief] = []
+    recovery_root = os.getenv("REPORT_RESUME_ROOT", "").strip()
+    if recovery_root:
+        resumed_files, resumed_briefs = restore_accepted(Path(recovery_root), output_root, requested_count=args.count)
+        action_notice(f"batch_resume_accepted={len(resumed_files)} quality_revalidated=1")
     pool_count = candidate_pool_count(args.count)
     ready_buffer_count = candidate_buffer_count(args.count, pool_count)
     max_attempts = max_generation_attempts(args.count)
@@ -427,19 +434,21 @@ def main() -> None:
             f"primary_source={is_authoritative_source_url(brief.source_url)} completed={is_report_completed_candidate(brief)} "
             f"domestic={brief.is_domestic} case={brief.case_name} url={brief.source_url[:160]}"
         )
-    effective_min_domestic = min(args.min_domestic, sum(1 for brief in selected if brief.is_domestic))
-    if effective_min_domestic < args.min_domestic:
-        LOGGER.info("Lowering domestic quota for this run because selected candidate pool has only %s domestic candidates", effective_min_domestic)
+    effective_min_domestic = min(args.min_domestic, args.count)
     timestamp = datetime.now(BEIJING_TZ).strftime("%Y%m%d_%H%M%S")
     run_label = f"{args.mode}_{timestamp}"
     manifest_path = output_root / "_manifests" / f"{run_label}.json"
     progress_path = output_root / "_manifests" / f"{run_label}_progress.json"
 
-    written: list[str] = []
-    written_briefs: list[CaseBrief] = []
+    written: list[str] = list(resumed_files)
+    written_briefs: list[CaseBrief] = list(resumed_briefs)
+    if written_briefs:
+        save_manifest(manifest_path, written_briefs)
     failures: list[dict[str, str]] = []
     attempted = 0
     for index, brief in enumerate(selected, start=1):
+        if any(brief.identity_key() == prior.identity_key() for prior in written_briefs):
+            continue
         if len(written) >= args.count:
             break
         if attempted >= max_attempts:
@@ -539,6 +548,8 @@ def main() -> None:
     incomplete_written = [brief.case_name for brief in written_briefs if not is_report_completed_candidate(brief)]
     if incomplete_written:
         raise RuntimeError("Generated reports include incomplete transactions: " + "；".join(incomplete_written))
+    if domestic_written(written_briefs) < effective_min_domestic:
+        raise RuntimeError("Generated reports do not meet the required domestic quota")
     if len(written) < args.count and env_flag("REPORT_REQUIRE_FULL_COUNT", default=True):
         failure_summary = " | ".join(
             f"{item.get('case_name', '-')}: {str(item.get('error', '-'))[:220]}"
