@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20261002_081949_广州达安基因收购广永科技100%股权：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20261004_045742_北京东方生态新能源收购的基本情况北京东方生：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261002_081949_利安人寿保险收购中山公用5%股份：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261002_081949_宝鼎投资拟设立收购强力新材5.1443：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    }
+  ]
+}
