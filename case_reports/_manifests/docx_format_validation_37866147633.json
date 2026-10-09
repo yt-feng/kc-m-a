@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/01_整合一级资产_资本化/weekly_20261009_084544_上海奥浦迈生物科技收购澎立生物医药技术上海：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 10,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261009_084544_吴为荣收购南卫股份5.8815：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261009_084544_实际控制人张2镇潮先收购税友股份5.04%股：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 17,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261009_084544_彭海荣收购赛微微电5.0917：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    }
+  ]
+}
