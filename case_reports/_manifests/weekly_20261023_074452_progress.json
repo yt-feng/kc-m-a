@@ -1,0 +1,41 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20261023_074452",
+  "requested_count": 4,
+  "candidate_count": 16,
+  "attempted_count": 9,
+  "count": 4,
+  "files": [
+    "case_reports/06_跨境并购/weekly_20261023_074452_GracoInc.收购ValcoMelt：现金支付与业务承接.docx",
+    "case_reports/02_上市平台持续整合/weekly_20261023_074452_浙江帅丰电器收购杭州惠嘉信息科技有限：现金支付与业务承接.docx",
+    "case_reports/02_上市平台持续整合/weekly_20261023_074452_广州市金钟汽车零件收购合肥楷驰汽车零部件有：协议转让与交割条件.docx",
+    "case_reports/09_上市公司_PE/weekly_20261023_074452_中际旭创合计收购中石科技10.47%：协议转让与交割条件.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "上海厚得妙景商务咨询有限公司受让首华燃气控制权股份",
+      "category": "上市公司控股权并购",
+      "error": "Report quality validation failed for 上海厚得妙景商务咨询有限公司受让首华燃气控制权股份: hard=[] quality=['长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。']"
+    },
+    {
+      "case_name": "爱柯迪收购卓尔博（宁波）精密机电有限公司71%股权",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for 爱柯迪收购卓尔博（宁波）精密机电有限公司71%股权: hard=['主副标题必须包含标的方名称或简称：卓尔博（宁波）精密机电有限公司71%股权。'] quality=['分析深度不足：需要同时展开至少三个层面，例如产业判断、交易结构、财务影响、交割承接或并购方法论意义。', '长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。', '缺少产业层面的判断，需要结合标的所处行业、客户/产品/资源位置或竞争格局解释交易意义。']"
+    },
+    {
+      "case_name": "Transtech收购Hao Min Investment Holdings 100%股权",
+      "category": "整合一级资产+资本化",
+      "error": "Report quality validation failed for Transtech收购Hao Min Investment Holdings 100%股权: hard=[] quality=['段落开头重复，行文模式化；需要调整段落推进方式，避免每段都用相同句式开头。']"
+    },
+    {
+      "case_name": "中化装备收购益阳橡胶塑料机械集团有限公司100%股权",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for 中化装备收购益阳橡胶塑料机械集团有限公司100%股权: hard=[] quality=['分析深度不足：需要同时展开至少三个层面，例如产业判断、交易结构、财务影响、交割承接或并购方法论意义。', '长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。', '结语缺少判断和解释力，需要说明本案事实如何推导出同类并购的方法论启示。']"
+    },
+    {
+      "case_name": "科森科技收购展固科技30.89%股权",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for 科森科技收购展固科技30.89%股权: hard=[] quality=['长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。', '结语缺少判断和解释力，需要说明本案事实如何推导出同类并购的方法论启示。']"
+    }
+  ]
+}

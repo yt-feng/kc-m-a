@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20261023_074452_广州市金钟汽车零件收购合肥楷驰汽车零部件有：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20261023_074452_浙江帅丰电器收购杭州惠嘉信息科技有限：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/06_跨境并购/weekly_20261023_074452_GracoInc.收购ValcoMelt：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261023_074452_中际旭创合计收购中石科技10.47%：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 14,
+      "half_width_quote_count": 0
+    }
+  ]
+}
