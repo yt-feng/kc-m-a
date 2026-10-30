@@ -1,0 +1,31 @@
+{
+  "mode": "weekly",
+  "run_label": "weekly_20261030_085733",
+  "requested_count": 4,
+  "candidate_count": 16,
+  "attempted_count": 7,
+  "count": 4,
+  "files": [
+    "case_reports/03_上市公司控股权并购/weekly_20261030_085733_上海厚得妙景商务咨询收购首华燃气科技上海：要约与控制权安排.docx",
+    "case_reports/02_上市平台持续整合/weekly_20261030_085733_中化装备科技青岛收购益阳橡胶塑料机械集团：股权比例与治理安排.docx",
+    "case_reports/09_上市公司_PE/weekly_20261030_085733_上海峄昕收购奥佳华10%股份：要约与控制权安排.docx",
+    "case_reports/09_上市公司_PE/weekly_20261030_085733_杨宝和先生收购海默科技10.8%股：协议转让与交割条件.docx"
+  ],
+  "failures": [
+    {
+      "case_name": "Clean Harbors收购EnviroServe和ES&H",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for Clean Harbors收购EnviroServe和ES&H: hard=[] quality=['标题缺少核心交易逻辑关键词，需要体现交易结构、产业位置、控制权、财务影响或承接重点。']"
+    },
+    {
+      "case_name": "National CineMedia收购Captivate Holdings",
+      "category": "依托上市平台持续整合同类资产",
+      "error": "Report quality validation failed for National CineMedia收购Captivate Holdings: hard=[] quality=['标题缺少核心交易逻辑关键词，需要体现交易结构、产业位置、控制权、财务影响或承接重点。', '长段分析不足，文章更像摘要；需要增加若干连续论证段，解释事实之间的因果关系和方法论意义。']"
+    },
+    {
+      "case_name": "WhiteHawk Minerals收购SJM II Appalachia/Haynesville资产",
+      "category": "整合一级资产+资本化",
+      "error": "Report quality validation failed for WhiteHawk Minerals收购SJM II Appalachia/Haynesville资产: hard=['交易双方基本介绍不足，需要写清并购方和标的方的主营业务、资产/产品、财务或经营规模。'] quality=['段落开头重复，行文模式化；需要调整段落推进方式，避免每段都用相同句式开头。', '文章前部没有说明交易目标，需要解释为什么要做这笔交易，以及希望实现取得控制权、内部整合、产业协同、退出变现、优化资本结构或补强业务等哪类目标。']"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20261030_085733_中化装备科技青岛收购益阳橡胶塑料机械集团：股权比例与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 14,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/03_上市公司控股权并购/weekly_20261030_085733_上海厚得妙景商务咨询收购首华燃气科技上海：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 14,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261030_085733_上海峄昕收购奥佳华10%股份：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 13,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261030_085733_杨宝和先生收购海默科技10.8%股：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    }
+  ]
+}
