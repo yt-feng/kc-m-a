@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20261106_091452_天水华天科技股份有限收购华羿微电子股份有限公：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 7,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/06_跨境并购/weekly_20261106_091452_杭州巨星科技股份有限收购艾纶锐祈清洁设备上海：控制权与治理安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 4,
+      "body_count": 12,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261106_091452_杭州启测未来企业管理收购江苏博云23%股份：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261106_091452_鸿跃新能收购工大科雅10.54%：要约与控制权安排.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 15,
+      "half_width_quote_count": 0
+    }
+  ]
+}
