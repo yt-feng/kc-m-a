@@ -1,0 +1,38 @@
+{
+  "count": 4,
+  "failed": 0,
+  "results": [
+    {
+      "file": "case_reports/01_整合一级资产_资本化/weekly_20261113_093444_AEVEXCorp收购MaritimeA：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 18,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/01_整合一级资产_资本化/weekly_20261113_093444_GrantThor收购CBIZ,Inc.：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 19,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/02_上市平台持续整合/weekly_20261113_093444_深圳爱克莱特科技收购东莞市硅翔绝缘材料：现金支付与业务承接.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 5,
+      "body_count": 16,
+      "half_width_quote_count": 0
+    },
+    {
+      "file": "case_reports/09_上市公司_PE/weekly_20261113_093444_前海诚域的100收购世联行5.02%股份：协议转让与交割条件.docx",
+      "ok": true,
+      "issues": [],
+      "heading_count": 6,
+      "body_count": 18,
+      "half_width_quote_count": 0
+    }
+  ]
+}
